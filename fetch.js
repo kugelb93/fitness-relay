@@ -276,14 +276,20 @@ async function hevyCoachAnalysis() {
 function buildHistory(prevHistory, weeklyRaw, runs, runsOk) {
   const prev = new Map(prevHistory.map((h) => [h.week, h]));
   const runsByWeek = {},
-    runMinByWeek = {};
+    runMinByWeek = {},
+    runHrByWeek = {};
   if (runsOk) {
     for (const r of runs) {
       const wk = isoWeek(new Date(r.day + "T12:00:00Z"));
       runsByWeek[wk] = (runsByWeek[wk] || 0) + 1;
       runMinByWeek[wk] = (runMinByWeek[wk] || 0) + (r.duration_min || 0);
+      if (r.avg_hr != null) (runHrByWeek[wk] = runHrByWeek[wk] || []).push(r.avg_hr);
     }
   }
+  const weekHr = (wk) =>
+    runHrByWeek[wk] && runHrByWeek[wk].length
+      ? Math.round(runHrByWeek[wk].reduce((a, b) => a + b, 0) / runHrByWeek[wk].length)
+      : null;
   const nowWeek = isoWeek(new Date());
   // A past week's runs are only fully visible if its Monday is inside the
   // 28-day Oura window.
@@ -292,28 +298,50 @@ function buildHistory(prevHistory, weeklyRaw, runs, runsOk) {
   return weeklyRaw.map((e) => {
     const p = prev.get(e.week);
     let runs7 = null,
-      runMin7 = null;
+      runMin7 = null,
+      runHr7 = null;
     if (e.week === nowWeek && runsOk) {
       runs7 = runsByWeek[e.week] || 0;
       runMin7 = runMinByWeek[e.week] || 0;
+      runHr7 = weekHr(e.week);
     } else if (p && p.runs7 != null) {
       runs7 = p.runs7;
       runMin7 = p.runMin7;
+      runHr7 = p.runHr7 != null ? p.runHr7 : runsOk && fullyCovered(e.date) ? weekHr(e.week) : null;
     } else if (runsOk && fullyCovered(e.date)) {
       runs7 = runsByWeek[e.week] || 0;
       runMin7 = runMinByWeek[e.week] || 0;
+      runHr7 = weekHr(e.week);
     }
-    return { ...e, runs7, runMin7 };
+    return { ...e, runs7, runMin7, runHr7 };
   });
 }
 // ---------------------------------------------------------------------------
 
+// Per-run heart rate from the Oura time-series endpoint: avg, max, and
+// cardiac drift (second-half avg vs first-half avg, %). Drift is a real
+// intensity/strain marker, far more useful than Oura's coarse intensity label.
+async function runHeartRate(startIso, endIso) {
+  try {
+    const q = `start_datetime=${encodeURIComponent(startIso)}&end_datetime=${encodeURIComponent(endIso)}`;
+    const data = await getJSON(`${OURA}/heartrate?${q}`, { Authorization: `Bearer ${OURA_TOKEN}` });
+    const bpm = (data.data || []).map((s) => s.bpm).filter((b) => b > 0);
+    if (bpm.length < 4) return { avg_hr: null, max_hr: null, hr_drift_pct: null };
+    const avg = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+    const half = Math.floor(bpm.length / 2);
+    const drift = round(((avg(bpm.slice(half)) - avg(bpm.slice(0, half))) / avg(bpm.slice(0, half))) * 100, 1);
+    return { avg_hr: Math.round(avg(bpm)), max_hr: Math.max.apply(null, bpm), hr_drift_pct: drift };
+  } catch (e) {
+    return { avg_hr: null, max_hr: null, hr_drift_pct: null };
+  }
+}
+
 async function ouraRuns() {
   // 28 days so the coach can see run-volume trend, not just the last few days.
   const data = await getJSON(`${OURA}/workout?${ouraRange(28)}`, { Authorization: `Bearer ${OURA_TOKEN}` });
-  return (data.data || [])
-    .filter((w) => (w.activity || "").toLowerCase() === "running")
-    .map((w) => {
+  const runs = (data.data || []).filter((w) => (w.activity || "").toLowerCase() === "running");
+  return Promise.all(
+    runs.map(async (w) => {
       const durMin =
         w.start_datetime && w.end_datetime
           ? Math.round((new Date(w.end_datetime) - new Date(w.start_datetime)) / 60000)
@@ -323,13 +351,19 @@ async function ouraRuns() {
       // and let duration + intensity carry the signal.
       const distKm =
         w.distance != null && w.distance >= 100 ? +(w.distance / 1000).toFixed(2) : null;
+      const hr =
+        w.start_datetime && w.end_datetime
+          ? await runHeartRate(w.start_datetime, w.end_datetime)
+          : { avg_hr: null, max_hr: null, hr_drift_pct: null };
       return {
         day: w.day,
         intensity: w.intensity || null,
         distance_km: distKm,
         duration_min: durMin,
+        ...hr,
       };
-    });
+    })
+  );
 }
 
 // Last 7 days of readiness + sleep with averages and direction, so the coach
