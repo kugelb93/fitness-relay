@@ -212,7 +212,50 @@ async function hevyCoachAnalysis() {
     .map((m) => ({ muscle: m, volumeKg: round(vol[m], 0), sets: sc[m] || 0, pct: round((vol[m] / totv) * 100, 1) }))
     .sort((a, b) => b.volumeKg - a.volumeKg);
 
+  // Weekly raw entries for the history: rebuilt from the FULL workout log, so
+  // week-over-week comparisons are backfilled from day one. Per ISO week:
+  // lifting session count, rolling 4-week frequency, and each lift trained
+  // that week with its best e1RM/set of the week.
+  const weekOf = (dateStr) => isoWeek(new Date(dateStr + "T12:00:00Z"));
+  const sessionsByWeek = {};
+  for (const w of workouts) {
+    const wk = weekOf(daySlice(w.start_time));
+    sessionsByWeek[wk] = (sessionsByWeek[wk] || 0) + 1;
+  }
+  const liftsByWeek = {};
+  for (const t in hist) {
+    for (const x of hist[t]) {
+      const wk = weekOf(x.date);
+      const slot = ((liftsByWeek[wk] = liftsByWeek[wk] || {})[t] =
+        liftsByWeek[wk][t] || { e1rm: -1, bestSet: "" });
+      if (x.bestE1rm > slot.e1rm) {
+        slot.e1rm = x.bestE1rm;
+        slot.bestSet = x.bestSet;
+      }
+    }
+  }
+  const weeklyRaw = [];
+  for (let k = HISTORY_WEEKS - 1; k >= 0; k--) {
+    const ref = new Date(Date.now() - k * 7 * 86400000);
+    const dow = ref.getUTCDay() || 7;
+    const monday = new Date(ref.getTime() - (dow - 1) * 86400000);
+    const weekEnd = monday.getTime() + 7 * 86400000; // exclusive
+    const cnt28 = workouts.filter((w) => {
+      const t = new Date(w.start_time).getTime();
+      return t < weekEnd && t >= weekEnd - 28 * 86400000;
+    }).length;
+    const wk = isoWeek(ref);
+    weeklyRaw.push({
+      week: wk,
+      date: isoDate(monday),
+      sessions: sessionsByWeek[wk] || 0,
+      perWeek: round(cnt28 / 4, 1),
+      lifts: liftsByWeek[wk] || {},
+    });
+  }
+
   return {
+    weeklyRaw,
     total: workouts.length,
     lastDate: workouts.length ? daySlice(workouts[0].start_time) : null,
     daysSinceLast: workouts.length ? daysSince(workouts[0].start_time) : null,
@@ -224,31 +267,44 @@ async function hevyCoachAnalysis() {
   };
 }
 
-// One compact entry per ISO week: the week's per-lift state for active lifts
-// plus run volume. Re-running within the same week overwrites that week's
-// entry, so each entry ends up holding the week's final state.
-function updateHistory(history, coach, runs, runsOk) {
-  const now = new Date();
-  const last7Runs = runsOk
-    ? runs.filter((r) => daysSince(r.day + "T12:00:00Z") <= 7)
-    : null;
-  const entry = {
-    week: isoWeek(now),
-    date: isoDate(now),
-    sessionsLast7: coach.sessionsLast7,
-    perWeek: coach.perWeek,
-    runs7: last7Runs ? last7Runs.length : null,
-    runMin7: last7Runs ? last7Runs.reduce((a, r) => a + (r.duration_min || 0), 0) : null,
-    lifts: {},
-  };
-  for (const l of coach.lifts) {
-    if (!l.active) continue;
-    entry.lifts[l.title] = { e1rm: l.currentE1rm, bestSet: l.currentBestSet };
+// History: one entry per ISO week for the last HISTORY_WEEKS weeks. Lift and
+// session data are REBUILT from the full Hevy history on every run (so the
+// first run already backfills months of week-over-week data). Run volume can
+// only be observed through the relay's 28-day Oura window, so values recorded
+// close to the fact are preserved from the previous history file; the current
+// week is always recomputed.
+function buildHistory(prevHistory, weeklyRaw, runs, runsOk) {
+  const prev = new Map(prevHistory.map((h) => [h.week, h]));
+  const runsByWeek = {},
+    runMinByWeek = {};
+  if (runsOk) {
+    for (const r of runs) {
+      const wk = isoWeek(new Date(r.day + "T12:00:00Z"));
+      runsByWeek[wk] = (runsByWeek[wk] || 0) + 1;
+      runMinByWeek[wk] = (runMinByWeek[wk] || 0) + (r.duration_min || 0);
+    }
   }
-  const rest = history.filter((h) => h.week !== entry.week);
-  rest.push(entry);
-  rest.sort((a, b) => a.week.localeCompare(b.week));
-  return rest.slice(-HISTORY_WEEKS);
+  const nowWeek = isoWeek(new Date());
+  // A past week's runs are only fully visible if its Monday is inside the
+  // 28-day Oura window.
+  const fullyCovered = (mondayIso) =>
+    new Date(mondayIso + "T00:00:00Z").getTime() >= Date.now() - 27 * 86400000;
+  return weeklyRaw.map((e) => {
+    const p = prev.get(e.week);
+    let runs7 = null,
+      runMin7 = null;
+    if (e.week === nowWeek && runsOk) {
+      runs7 = runsByWeek[e.week] || 0;
+      runMin7 = runMinByWeek[e.week] || 0;
+    } else if (p && p.runs7 != null) {
+      runs7 = p.runs7;
+      runMin7 = p.runMin7;
+    } else if (runsOk && fullyCovered(e.date)) {
+      runs7 = runsByWeek[e.week] || 0;
+      runMin7 = runMinByWeek[e.week] || 0;
+    }
+    return { ...e, runs7, runMin7 };
+  });
 }
 // ---------------------------------------------------------------------------
 
@@ -276,6 +332,39 @@ async function ouraRuns() {
     });
 }
 
+// Last 7 days of readiness + sleep with averages and direction, so the coach
+// judges the WEEK's recovery, not whichever single day the snapshot ran on.
+// trend = second-half average minus first-half average (negative = sagging).
+async function ouraRecovery7() {
+  const auth = { Authorization: `Bearer ${OURA_TOKEN}` };
+  const [rd, sd] = await Promise.all([
+    getJSON(`${OURA}/daily_readiness?${ouraRange(7)}`, auth),
+    getJSON(`${OURA}/daily_sleep?${ouraRange(7)}`, auth),
+  ]);
+  const byDay = {};
+  for (const r of rd.data || []) byDay[r.day] = { day: r.day, readiness: r.score, sleep: null };
+  for (const s of sd.data || []) {
+    (byDay[s.day] = byDay[s.day] || { day: s.day, readiness: null, sleep: null }).sleep = s.score;
+  }
+  const days = Object.values(byDay).sort((a, b) => a.day.localeCompare(b.day));
+  const series = (k) => days.map((d) => d[k]).filter((v) => v != null);
+  const avg = (a) => (a.length ? round(a.reduce((x, y) => x + y, 0) / a.length, 0) : null);
+  const trend = (a) =>
+    a.length >= 4
+      ? round(avg(a.slice(Math.ceil(a.length / 2))) - avg(a.slice(0, Math.floor(a.length / 2))), 0)
+      : 0;
+  const r = series("readiness"),
+    s = series("sleep");
+  return {
+    days,
+    readinessAvg: avg(r),
+    readinessMin: r.length ? Math.min.apply(null, r) : null,
+    readinessTrend: trend(r),
+    sleepAvg: avg(s),
+    sleepTrend: trend(s),
+  };
+}
+
 async function ouraLatest(endpoint, startDaysAgo, pick) {
   const data = await getJSON(`${OURA}/${endpoint}?${ouraRange(startDaysAgo)}`, {
     Authorization: `Bearer ${OURA_TOKEN}`,
@@ -301,6 +390,7 @@ async function main() {
     runs: [],
     readiness: null,
     sleep: null,
+    recovery7: null,
     coach: null,
     history: [],
     errors,
@@ -310,6 +400,7 @@ async function main() {
     hevyStrength().then((r) => (out.strength = r)).catch((e) => errors.push(`hevy: ${e.message}`)),
     hevyCoachAnalysis().then((r) => (out.coach = r)).catch((e) => errors.push(`hevy_coach: ${e.message}`)),
     ouraRuns().then((r) => (out.runs = r)).catch((e) => errors.push(`oura_runs: ${e.message}`)),
+    ouraRecovery7().then((r) => (out.recovery7 = r)).catch((e) => errors.push(`oura_recovery: ${e.message}`)),
     ouraLatest("daily_readiness", 4, (r) => ({
       day: r.day,
       score: r.score,
@@ -337,7 +428,8 @@ async function main() {
   }
   if (out.coach) {
     const runsOk = !errors.some((e) => e.startsWith("oura_runs"));
-    history = updateHistory(history, out.coach, out.runs, runsOk);
+    history = buildHistory(history, out.coach.weeklyRaw, out.runs, runsOk);
+    delete out.coach.weeklyRaw; // lives in out.history, no need to ship twice
     encryptToFile("history.json.enc", history, key);
   }
   out.history = history;
@@ -351,6 +443,7 @@ async function main() {
   console.log(
     `Wrote fitness.json.enc: strength=${out.strength.length} runs=${out.runs.length} ` +
       `readiness=${out.readiness ? "ok" : "missing"} sleep=${out.sleep ? "ok" : "missing"} ` +
+      `recovery7=${out.recovery7 ? "ok" : "missing"} ` +
       `coach=${out.coach ? `ok(${activeLifts} active lifts)` : "missing"} ` +
       `history=${out.history.length}wk errors=${errors.length}`
   );
