@@ -1,28 +1,58 @@
 #!/usr/bin/env node
-// Fetches a compact fitness snapshot from Hevy + Oura and writes fitness.json.
-// Runs in GitHub Actions (which has open internet); the daily-brief cloud
-// routine, which cannot reach Hevy/Oura directly, reads the committed file.
+// Fetches a compact fitness snapshot from Hevy + Oura and writes fitness.json.enc.
+// Runs in GitHub Actions (which has open internet); the cloud routines, which
+// cannot reach Hevy/Oura directly, read the committed file.
 //
-// It also computes the full weekly-coach analysis (all workout history:
-// per-lift e1RM progression, PRs, stalls, muscle balance) under `coach`, so the
-// weekly lifting-coach routine can decrypt and coach without ever calling Hevy.
+// The payload includes the full weekly-coach analysis under `coach`:
+//  - per-lift e1RM, PRs, regression-based trend, stall detection
+//  - set-level detail (last 3 sessions per active lift, incl. RPE when logged)
+//  - 28-day muscle balance
+// plus `history`: one compact entry per ISO week (kept in history.json.enc,
+// also committed) so the coach can diff this week against previous weeks.
 //
-// Tokens come from env (GitHub Actions secrets): HEVY_API_KEY, OURA_TOKEN.
-// Node 18+ (built-in fetch).
+// Tokens come from env (GitHub Actions secrets): HEVY_API_KEY, OURA_TOKEN,
+// FITNESS_KEY (encryption passphrase). Node 18+ (built-in fetch).
 
 const fs = require("fs");
+const crypto = require("crypto");
 
 const HEVY_KEY = process.env.HEVY_API_KEY;
 const OURA_TOKEN = process.env.OURA_TOKEN;
 const OURA = "https://api.ouraring.com/v2/usercollection";
 const HEVY = "https://api.hevyapp.com/v1";
 const ACTIVE_DAYS = 35;
+const HISTORY_WEEKS = 16;
+
+// ---- crypto helpers (key = sha256(passphrase); base64(iv || AES-256-CBC)) --
+function keyFromPassphrase(pass) {
+  return crypto.createHash("sha256").update(pass).digest();
+}
+function encryptToFile(path, obj, key) {
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv("aes-256-cbc", key, iv);
+  const enc = Buffer.concat([cipher.update(JSON.stringify(obj), "utf8"), cipher.final()]);
+  fs.writeFileSync(path, Buffer.concat([iv, enc]).toString("base64") + "\n");
+}
+function decryptFile(path, key) {
+  const buf = Buffer.from(fs.readFileSync(path, "utf8").trim(), "base64");
+  const dec = crypto.createDecipheriv("aes-256-cbc", key, buf.subarray(0, 16));
+  return JSON.parse(Buffer.concat([dec.update(buf.subarray(16)), dec.final()]).toString("utf8"));
+}
 
 function isoDate(d) {
   return d.toISOString().slice(0, 10);
 }
 function daysAgo(n) {
   return new Date(Date.now() - n * 86400000);
+}
+// ISO-8601 week id, e.g. "2026-W30".
+function isoWeek(d) {
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const dayNum = t.getUTCDay() || 7;
+  t.setUTCDate(t.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+  const week = Math.ceil(((t - yearStart) / 86400000 + 1) / 7);
+  return `${t.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
 }
 
 async function getJSON(url, headers) {
@@ -44,7 +74,7 @@ async function hevyStrength() {
   }));
 }
 
-// ---- Weekly-coach analysis (mirrors hevy/cloud-routine/coach.js) ----------
+// ---- Weekly-coach analysis ------------------------------------------------
 async function hevyAllPages(ep, field, ps) {
   let p = 1,
     pc = 1,
@@ -63,6 +93,42 @@ const daySlice = (i) => i.slice(0, 10);
 const daysSince = (i) => Math.floor((Date.now() - new Date(i)) / 86400000);
 const e1rm = (w, r) => (!w || !r ? 0 : w * (1 + r / 30));
 const setVol = (sets) => sets.reduce((v, s) => v + (s.weight_kg || 0) * (s.reps || 0), 0);
+
+// Least-squares slope over the last up-to-6 e1RM points, expressed as total
+// % change across that window. Far less noisy than first-vs-last: one bad
+// day at either end no longer flips a lift between climbing and stalled.
+// Only sessions from the last 60 days count, so the trend describes the
+// current training block: a lift restarted lighter after a long break reads
+// as flat-at-the-new-weight, not as a months-long collapse.
+function regressionTrendPct(entries) {
+  const pts = entries
+    .filter((x) => daysSince(x.date + "T12:00:00Z") <= 60)
+    .map((x) => x.bestE1rm)
+    .slice(-6);
+  const n = pts.length;
+  if (n < 2) return 0;
+  if (n === 2) {
+    return pts[0] ? round(((pts[1] - pts[0]) / pts[0]) * 100, 1) : 0;
+  }
+  const xs = pts.map((_, i) => i);
+  const mx = xs.reduce((a, b) => a + b, 0) / n;
+  const my = pts.reduce((a, b) => a + b, 0) / n;
+  let num = 0,
+    den = 0;
+  for (let i = 0; i < n; i++) {
+    num += (xs[i] - mx) * (pts[i] - my);
+    den += (xs[i] - mx) * (xs[i] - mx);
+  }
+  const slope = den ? num / den : 0;
+  const fittedFirst = my - slope * mx;
+  if (!fittedFirst) return 0;
+  return round(((slope * (n - 1)) / fittedFirst) * 100, 1);
+}
+
+// Compact one-set string: "80x5" or "80x5@8" when RPE was logged.
+function setStr(s) {
+  return `${s.weight_kg}x${s.reps}${s.rpe != null ? `@${s.rpe}` : ""}`;
+}
 
 async function hevyCoachAnalysis() {
   const templates = await hevyAllPages("exercise_templates", "exercise_templates", 100);
@@ -90,6 +156,7 @@ async function hevyCoachAnalysis() {
         bestE1rm: round(best.v),
         bestSet: best.s.weight_kg + "kg x " + best.s.reps,
         muscle: muscleOf(ex),
+        sets: wt.map(setStr),
       });
     }
   }
@@ -101,10 +168,7 @@ async function hevyCoachAnalysis() {
     if (s.length < 2) continue;
     const prE = Math.max.apply(null, s.map((x) => x.bestE1rm));
     const prW = Math.max.apply(null, s.map((x) => x.topWeight));
-    const rec = s.slice(-4);
-    const tr = rec[0].bestE1rm
-      ? round(((rec[rec.length - 1].bestE1rm - rec[0].bestE1rm) / rec[0].bestE1rm) * 100, 1)
-      : 0;
+    const tr = regressionTrendPct(s);
     const last = s[s.length - 1];
     const ds = daysSince(last.date + "T12:00:00Z");
     const atPr = last.bestE1rm >= prE - 0.01;
@@ -122,6 +186,12 @@ async function hevyCoachAnalysis() {
       active,
       atOrNearPr: atPr,
       stalled: active && s.length >= 4 && tr <= 0.5 && !atPr,
+      // Set-level detail so the coach sees actual work (scheme, rep
+      // progression, RPE), not just the single best set. Active lifts only,
+      // to keep the payload compact.
+      recentSessions: active
+        ? s.slice(-3).map((x) => ({ date: x.date, sets: x.sets }))
+        : undefined,
     });
   }
   lifts.sort((a, b) => b.timesLogged - a.timesLogged);
@@ -152,6 +222,28 @@ async function hevyCoachAnalysis() {
     lifts,
     muscleBalance28d: mb,
   };
+}
+
+// One compact entry per ISO week: the week's per-lift state for active lifts.
+// Re-running within the same week overwrites that week's entry, so each entry
+// ends up holding the week's final state.
+function updateHistory(history, coach) {
+  const now = new Date();
+  const entry = {
+    week: isoWeek(now),
+    date: isoDate(now),
+    sessionsLast7: coach.sessionsLast7,
+    perWeek: coach.perWeek,
+    lifts: {},
+  };
+  for (const l of coach.lifts) {
+    if (!l.active) continue;
+    entry.lifts[l.title] = { e1rm: l.currentE1rm, bestSet: l.currentBestSet };
+  }
+  const rest = history.filter((h) => h.week !== entry.week);
+  rest.push(entry);
+  rest.sort((a, b) => a.week.localeCompare(b.week));
+  return rest.slice(-HISTORY_WEEKS);
 }
 // ---------------------------------------------------------------------------
 
@@ -189,6 +281,13 @@ async function ouraLatest(endpoint, startDaysAgo, pick) {
 }
 
 async function main() {
+  const passphrase = process.env.FITNESS_KEY;
+  if (!passphrase) {
+    console.error("FITNESS_KEY is not set. Refusing to write plaintext.");
+    process.exit(1);
+  }
+  const key = keyFromPassphrase(passphrase);
+
   const errors = [];
   const out = {
     generated_at: new Date().toISOString(),
@@ -197,6 +296,7 @@ async function main() {
     readiness: null,
     sleep: null,
     coach: null,
+    history: [],
     errors,
   };
 
@@ -220,28 +320,32 @@ async function main() {
 
   await Promise.all(tasks);
 
-  // Encrypt before committing: the repo is public, so only the ciphertext is
-  // ever written to disk or logs. Key = sha256(passphrase); output is
-  // base64(iv || AES-256-CBC ciphertext). The brief routine holds the same
-  // passphrase and reverses this.
-  const passphrase = process.env.FITNESS_KEY;
-  if (!passphrase) {
-    console.error("FITNESS_KEY is not set. Refusing to write plaintext.");
-    process.exit(1);
+  // Weekly history: decrypt the committed file, fold in this week, keep 16.
+  let history = [];
+  if (fs.existsSync("history.json.enc")) {
+    try {
+      history = decryptFile("history.json.enc", key);
+    } catch (e) {
+      errors.push(`history_read: ${e.message}`);
+    }
   }
-  const crypto = require("crypto");
-  const key = crypto.createHash("sha256").update(passphrase).digest();
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv("aes-256-cbc", key, iv);
-  const enc = Buffer.concat([cipher.update(JSON.stringify(out), "utf8"), cipher.final()]);
-  fs.writeFileSync("fitness.json.enc", Buffer.concat([iv, enc]).toString("base64") + "\n");
+  if (out.coach) {
+    history = updateHistory(history, out.coach);
+    encryptToFile("history.json.enc", history, key);
+  }
+  out.history = history;
+
+  // Encrypt before committing: the repo is public, so only ciphertext is ever
+  // written to disk or logs.
+  encryptToFile("fitness.json.enc", out, key);
 
   // Log counts only - never the values, since Actions logs are public.
   const activeLifts = out.coach ? out.coach.lifts.filter((l) => l.active).length : 0;
   console.log(
     `Wrote fitness.json.enc: strength=${out.strength.length} runs=${out.runs.length} ` +
       `readiness=${out.readiness ? "ok" : "missing"} sleep=${out.sleep ? "ok" : "missing"} ` +
-      `coach=${out.coach ? `ok(${activeLifts} active lifts)` : "missing"} errors=${errors.length}`
+      `coach=${out.coach ? `ok(${activeLifts} active lifts)` : "missing"} ` +
+      `history=${out.history.length}wk errors=${errors.length}`
   );
 }
 
