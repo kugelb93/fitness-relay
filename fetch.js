@@ -224,16 +224,21 @@ async function hevyCoachAnalysis() {
   };
 }
 
-// One compact entry per ISO week: the week's per-lift state for active lifts.
-// Re-running within the same week overwrites that week's entry, so each entry
-// ends up holding the week's final state.
-function updateHistory(history, coach) {
+// One compact entry per ISO week: the week's per-lift state for active lifts
+// plus run volume. Re-running within the same week overwrites that week's
+// entry, so each entry ends up holding the week's final state.
+function updateHistory(history, coach, runs, runsOk) {
   const now = new Date();
+  const last7Runs = runsOk
+    ? runs.filter((r) => daysSince(r.day + "T12:00:00Z") <= 7)
+    : null;
   const entry = {
     week: isoWeek(now),
     date: isoDate(now),
     sessionsLast7: coach.sessionsLast7,
     perWeek: coach.perWeek,
+    runs7: last7Runs ? last7Runs.length : null,
+    runMin7: last7Runs ? last7Runs.reduce((a, r) => a + (r.duration_min || 0), 0) : null,
     lifts: {},
   };
   for (const l of coach.lifts) {
@@ -248,7 +253,8 @@ function updateHistory(history, coach) {
 // ---------------------------------------------------------------------------
 
 async function ouraRuns() {
-  const data = await getJSON(`${OURA}/workout?${ouraRange(10)}`, { Authorization: `Bearer ${OURA_TOKEN}` });
+  // 28 days so the coach can see run-volume trend, not just the last few days.
+  const data = await getJSON(`${OURA}/workout?${ouraRange(28)}`, { Authorization: `Bearer ${OURA_TOKEN}` });
   return (data.data || [])
     .filter((w) => (w.activity || "").toLowerCase() === "running")
     .map((w) => {
@@ -330,7 +336,8 @@ async function main() {
     }
   }
   if (out.coach) {
-    history = updateHistory(history, out.coach);
+    const runsOk = !errors.some((e) => e.startsWith("oura_runs"));
+    history = updateHistory(history, out.coach, out.runs, runsOk);
     encryptToFile("history.json.enc", history, key);
   }
   out.history = history;
