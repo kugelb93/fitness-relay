@@ -1,0 +1,44 @@
+name: fetch-fitness
+
+on:
+  schedule:
+    # 05:00 UTC daily = 07:00 Europe/Stockholm (summer), before the 07:30 brief.
+    - cron: "0 5 * * *"
+  workflow_dispatch: {}
+
+# Allow the job to commit fitness.json back to the repo.
+permissions:
+  contents: write
+
+concurrency:
+  group: fetch-fitness
+  cancel-in-progress: true
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Fetch Hevy + Oura snapshot (encrypted output)
+        env:
+          HEVY_API_KEY: ${{ secrets.HEVY_API_KEY }}
+          OURA_TOKEN: ${{ secrets.OURA_TOKEN }}
+          FITNESS_KEY: ${{ secrets.FITNESS_KEY }}
+        run: node fetch.js
+
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -n "$(git status --porcelain fitness.json.enc)" ]; then
+            git add fitness.json.enc
+            git commit -m "chore: update encrypted fitness snapshot"
+            git push
+          else
+            echo "No change in fitness.json.enc"
+          fi
