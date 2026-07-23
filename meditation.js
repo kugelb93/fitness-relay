@@ -154,6 +154,13 @@ async function main() {
     return c;
   });
 
+  // Test hook (workflow_dispatch input): pretend the latest session just
+  // appeared, so the notifier routine can be exercised end-to-end.
+  if (process.env.MARK_LATEST_NEW === "1" && sessions.length) {
+    sessions[sessions.length - 1].first_seen = now;
+    console.log("MARK_LATEST_NEW: latest session re-marked as new");
+  }
+
   const last30 = sessions; // window is 21d, close enough for "recent usual"
   const hrDrops = last30.map((s) => s.hr && s.hr.change_pct).filter((v) => v != null);
   const hrvAvgs = last30.map((s) => s.hrv && s.hrv.avg).filter((v) => v != null);
