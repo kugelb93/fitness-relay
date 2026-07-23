@@ -37,3 +37,17 @@ AES-256-CBC encrypted and the workflow logs counts only, never values.
 Crypto: `fitness.json.enc` = base64(iv[16] || AES-256-CBC(sha256(FITNESS_KEY), plaintext)).
 
 Run manually: Actions tab > fetch-fitness > Run workflow.
+
+## Meditation notifier
+
+A second workflow (`.github/workflows/meditation.yml`, every 20 min) runs
+`meditation.js`: it pulls the Oura `session` endpoint (last 21 days), computes
+per-session stats (duration, HR/HRV start-end-min-max, 12-point curves, mood)
+plus rolling stats (streak, sessions last 7 days, 21-day averages), and commits
+`meditation.json.enc` (same crypto, same `FITNESS_KEY`).
+
+Each session carries `first_seen`: the timestamp of the relay run that first
+saw it. On bootstrap (no previous file, or an unreadable one) everything is
+marked `first_seen = epoch` so nothing looks new. The hourly "Meditation
+summary" cloud routine decrypts the file and DMs a summary for any session
+whose `first_seen` falls inside its last polling window.

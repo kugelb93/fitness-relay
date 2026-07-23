@@ -1,0 +1,45 @@
+name: fetch-meditation
+
+on:
+  schedule:
+    # Every 20 min, offset from fetch-fitness (which runs at 05:00) to avoid
+    # two jobs pushing to the repo at the same moment.
+    - cron: "7,27,47 * * * *"
+  workflow_dispatch: {}
+
+# Allow the job to commit meditation.json.enc back to the repo.
+permissions:
+  contents: write
+
+concurrency:
+  group: fetch-meditation
+  cancel-in-progress: true
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Fetch Oura meditation sessions (encrypted output)
+        env:
+          OURA_TOKEN: ${{ secrets.OURA_TOKEN }}
+          FITNESS_KEY: ${{ secrets.FITNESS_KEY }}
+        run: node meditation.js
+
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -n "$(git status --porcelain meditation.json.enc)" ]; then
+            git pull --rebase --autostash
+            git add meditation.json.enc
+            git commit -m "chore: update encrypted meditation snapshot"
+            git push
+          else
+            echo "No change in meditation.json.enc"
+          fi
