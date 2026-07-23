@@ -273,7 +273,7 @@ async function hevyCoachAnalysis() {
 // only be observed through the relay's 28-day Oura window, so values recorded
 // close to the fact are preserved from the previous history file; the current
 // week is always recomputed.
-function buildHistory(prevHistory, weeklyRaw, runs, runsOk) {
+function buildHistory(prevHistory, weeklyRaw, runs, runsOk, recovery7) {
   const prev = new Map(prevHistory.map((h) => [h.week, h]));
   const runsByWeek = {},
     runMinByWeek = {},
@@ -313,7 +313,16 @@ function buildHistory(prevHistory, weeklyRaw, runs, runsOk) {
       runMin7 = runMinByWeek[e.week] || 0;
       runHr7 = weekHr(e.week);
     }
-    return { ...e, runs7, runMin7, runHr7 };
+    // Weekly recovery averages: only observable for the current week (Oura
+    // recovery7 covers the trailing 7 days), preserved for past weeks from
+    // the previous history file. No backfill possible before this shipped.
+    let recAvg7 = p && p.recAvg7 != null ? p.recAvg7 : null;
+    let sleepAvg7 = p && p.sleepAvg7 != null ? p.sleepAvg7 : null;
+    if (e.week === nowWeek && recovery7) {
+      recAvg7 = recovery7.readinessAvg != null ? recovery7.readinessAvg : recAvg7;
+      sleepAvg7 = recovery7.sleepAvg != null ? recovery7.sleepAvg : sleepAvg7;
+    }
+    return { ...e, runs7, runMin7, runHr7, recAvg7, sleepAvg7 };
   });
 }
 // ---------------------------------------------------------------------------
@@ -462,7 +471,7 @@ async function main() {
   }
   if (out.coach) {
     const runsOk = !errors.some((e) => e.startsWith("oura_runs"));
-    history = buildHistory(history, out.coach.weeklyRaw, out.runs, runsOk);
+    history = buildHistory(history, out.coach.weeklyRaw, out.runs, runsOk, out.recovery7);
     delete out.coach.weeklyRaw; // lives in out.history, no need to ship twice
     encryptToFile("history.json.enc", history, key);
   }
