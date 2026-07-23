@@ -41,10 +41,14 @@ Run manually: Actions tab > fetch-fitness > Run workflow.
 ## Meditation notifier
 
 A second workflow (`.github/workflows/meditation.yml`, every 20 min) runs
-`meditation.js`: it pulls the Oura `session` endpoint (last 21 days), computes
-per-session stats (duration, HR/HRV start-end-min-max, 12-point curves, mood)
-plus rolling stats (streak, sessions last 7 days, 21-day averages), and commits
-`meditation.json.enc` (same crypto, same `FITNESS_KEY`).
+`meditation.js`: it pulls the Oura `session` endpoint (last 21 days), classifies
+each session by duration (under 14 min = resonance breathing, 14+ = Wim Hof),
+computes per-session stats (HR/HRV start-end-min-max, per-minute averages, and
+the full raw series for the 6 most recent sessions) plus per-practice baselines
+and streaks, and commits `meditation.json.enc` (same crypto, same `FITNESS_KEY`).
+Oura's declared series interval is unreliable, so the effective interval is
+derived from duration / item count, and nulls stay in the series to preserve
+the index-to-time mapping.
 
 Each session carries `first_seen`: the timestamp of the relay run that first
 saw it. On bootstrap (no previous file, or an unreadable one) everything is
