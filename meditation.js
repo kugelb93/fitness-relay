@@ -64,25 +64,51 @@ function curve(items, n = 12) {
   return out;
 }
 
-// Stats over one 5s-interval series: avg, min/max, first-minute vs last-minute.
-function seriesStats(ts, higherIsCalmer) {
-  const vals = ((ts && ts.items) || []).filter((v) => v != null && v > 0);
-  if (vals.length < 24) return null; // need at least ~2 min of data
-  const first = avg(vals.slice(0, 12)); // first 60s at 5s interval
-  const last = avg(vals.slice(-12)); // last 60s
-  const changePct = first ? round(((last - first) / first) * 100, 1) : null;
+// Stats over one Oura time series. Oura's declared `interval` is unreliable
+// (a "5s" series often carries ~2s spacing with many nulls), so the effective
+// interval is derived from session duration / item count, and the full series
+// keeps nulls in place so index -> elapsed-time mapping stays accurate.
+function seriesStats(ts, includeFull, durMin) {
+  const items = (ts && ts.items) || [];
+  const vals = items.filter((v) => v != null && v > 0);
+  if (vals.length < 24 || !durMin) return null; // need a few minutes of data
+  const effInterval = round((durMin * 60) / items.length, 2);
+  const perMin = Math.max(1, Math.round(60 / effInterval));
+  const chunkAvg = (chunk) => {
+    const ok = chunk.filter((v) => v != null && v > 0);
+    return ok.length ? round(avg(ok), 1) : null;
+  };
+  const minutes = [];
+  for (let i = 0; i < items.length; i += perMin) {
+    const chunk = items.slice(i, i + perMin);
+    if (chunk.length >= perMin / 2) minutes.push(chunkAvg(chunk));
+  }
+  const first = chunkAvg(items.slice(0, perMin)); // first ~60s
+  const last = chunkAvg(items.slice(-perMin)); // last ~60s
+  const changePct = first && last ? round(((last - first) / first) * 100, 1) : null;
   return {
     avg: round(avg(vals), 1),
     min: Math.min.apply(null, vals),
     max: Math.max.apply(null, vals),
-    start: round(first, 1),
-    end: round(last, 1),
+    start: first,
+    end: last,
     change_pct: changePct, // negative HR change / positive HRV change = settling
     curve: curve(vals),
+    minutes, // per-minute averages, null where a minute had no readings
+    // Full-resolution series (nulls preserved) so the notifier can do real
+    // analysis: breath-retention rounds, HRV oscillation, settle time.
+    series: includeFull ? items : undefined,
+    interval_s: effInterval,
   };
 }
 
-function toCompact(s) {
+// Wilhelm's convention: under 14 min = resonance breathing, 14+ = Wim Hof.
+function practiceOf(durMin) {
+  if (durMin == null) return null;
+  return durMin < 14 ? "resonance" : "wim_hof";
+}
+
+function toCompact(s, includeFull) {
   const durMin =
     s.start_datetime && s.end_datetime
       ? round((new Date(s.end_datetime) - new Date(s.start_datetime)) / 60000, 1)
@@ -90,13 +116,13 @@ function toCompact(s) {
   return {
     id: s.id,
     type: s.type,
+    practice: practiceOf(durMin),
     day: s.day,
     start: s.start_datetime,
     end: s.end_datetime,
     duration_min: durMin,
-    mood: s.mood || null,
-    hr: seriesStats(s.heart_rate),
-    hrv: seriesStats(s.heart_rate_variability),
+    hr: seriesStats(s.heart_rate, includeFull, durMin),
+    hrv: seriesStats(s.heart_rate_variability, includeFull, durMin),
   };
 }
 
@@ -148,8 +174,10 @@ async function main() {
   raw.sort((a, b) => a.start_datetime.localeCompare(b.start_datetime));
 
   const now = new Date().toISOString();
-  const sessions = raw.map((s) => {
-    const c = toCompact(s);
+  // Full 5s-resolution series ships only for the 6 most recent sessions
+  // (that is what the notifier analyzes in depth); older ones keep stats only.
+  const sessions = raw.map((s, i) => {
+    const c = toCompact(s, i >= raw.length - 6);
     c.first_seen = prevSeen === null ? EPOCH : prevSeen[s.id] || now;
     return c;
   });
@@ -161,12 +189,26 @@ async function main() {
     console.log("MARK_LATEST_NEW: latest session re-marked as new");
   }
 
-  const last30 = sessions; // window is 21d, close enough for "recent usual"
-  const hrDrops = last30.map((s) => s.hr && s.hr.change_pct).filter((v) => v != null);
-  const hrvAvgs = last30.map((s) => s.hrv && s.hrv.avg).filter((v) => v != null);
-  const durs = last30.map((s) => s.duration_min).filter((v) => v != null);
   const today = isoDate(new Date());
   const weekAgo = isoDate(new Date(Date.now() - 6 * 86400000));
+
+  // Same-practice baselines: resonance and Wim Hof sessions are different
+  // exercises, so "vs your usual" must compare like with like.
+  const practiceStats = (p) => {
+    const ss = sessions.filter((s) => s.practice === p);
+    const pick = (fn) => ss.map(fn).filter((v) => v != null);
+    const durs = pick((s) => s.duration_min);
+    const hrAvgs = pick((s) => s.hr && s.hr.avg);
+    const hrMins = pick((s) => s.hr && s.hr.min);
+    const hrvAvgs = pick((s) => s.hrv && s.hrv.avg);
+    return {
+      count: ss.length,
+      avg_duration_min: durs.length ? round(avg(durs), 1) : null,
+      avg_hr: hrAvgs.length ? round(avg(hrAvgs), 1) : null,
+      avg_hr_min: hrMins.length ? round(avg(hrMins), 1) : null,
+      avg_hrv: hrvAvgs.length ? round(avg(hrvAvgs), 1) : null,
+    };
+  };
 
   const out = {
     generated_at: now,
@@ -177,9 +219,10 @@ async function main() {
       sessions_last7: sessions.filter((s) => s.day >= weekAgo).length,
       sessions_today: sessions.filter((s) => s.day === today).length,
       streak_days: streakDays(sessions.map((s) => s.day)),
-      avg_duration_min: durs.length ? round(avg(durs), 1) : null,
-      avg_hr_change_pct: hrDrops.length ? round(avg(hrDrops), 1) : null,
-      avg_hrv: hrvAvgs.length ? round(avg(hrvAvgs), 1) : null,
+      practices: {
+        resonance: practiceStats("resonance"),
+        wim_hof: practiceStats("wim_hof"),
+      },
     },
   };
 
