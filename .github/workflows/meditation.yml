@@ -8,11 +8,15 @@ on:
   workflow_dispatch:
     inputs:
       mark_latest_new:
-        description: "Test: re-mark the latest session as newly seen"
+        description: "Test: re-mark the latest session as newly seen (meditation.js)"
+        type: boolean
+        default: false
+      resend_latest:
+        description: "Test: re-send the most recent session to Slack (notify.js)"
         type: boolean
         default: false
 
-# Allow the job to commit meditation.json.enc back to the repo.
+# Allow the job to commit the encrypted snapshots back to the repo.
 permissions:
   contents: write
 
@@ -37,15 +41,23 @@ jobs:
           MARK_LATEST_NEW: ${{ inputs.mark_latest_new && '1' || '' }}
         run: node meditation.js
 
+      - name: Notify new sessions to Slack
+        env:
+          FITNESS_KEY: ${{ secrets.FITNESS_KEY }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          RESEND_LATEST: ${{ inputs.resend_latest && '1' || '' }}
+        run: node notify.js
+
       - name: Commit if changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if [ -n "$(git status --porcelain meditation.json.enc)" ]; then
+          if [ -n "$(git status --porcelain meditation.json.enc notified.json.enc)" ]; then
             git pull --rebase --autostash
-            git add meditation.json.enc
-            git commit -m "chore: update encrypted meditation snapshot"
+            git add meditation.json.enc notified.json.enc
+            git commit -m "chore: update encrypted meditation + notified snapshots"
             git push
           else
-            echo "No change in meditation.json.enc"
+            echo "No change in meditation.json.enc or notified.json.enc"
           fi

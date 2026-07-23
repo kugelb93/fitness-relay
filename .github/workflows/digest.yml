@@ -1,0 +1,24 @@
+name: breathing-digest
+
+on:
+  schedule:
+    # Sunday 17:00 UTC = 19:00 Europe/Stockholm (summer). Weekly recap.
+    - cron: "0 17 * * 0"
+  workflow_dispatch: {}
+
+jobs:
+  digest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Send weekly breathing digest to Slack
+        env:
+          FITNESS_KEY: ${{ secrets.FITNESS_KEY }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: node digest.js

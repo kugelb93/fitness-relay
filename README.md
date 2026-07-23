@@ -52,6 +52,31 @@ the index-to-time mapping.
 
 Each session carries `first_seen`: the timestamp of the relay run that first
 saw it. On bootstrap (no previous file, or an unreadable one) everything is
-marked `first_seen = epoch` so nothing looks new. The hourly "Meditation
-summary" cloud routine decrypts the file and DMs a summary for any session
-whose `first_seen` falls inside its last polling window.
+marked `first_seen = epoch` so nothing looks new.
+
+## Slack notifier + weekly digest (all in GitHub Actions)
+
+Notifications are generated and sent entirely from GitHub Actions (no claude.ai
+routine, no per-action quota):
+
+- `notify.js` runs in `meditation.yml` right after `meditation.js`. It decrypts
+  the snapshot, finds sessions not in the committed `notified.json.enc` set,
+  composes a per-session summary, and posts it to Slack. New sessions surface
+  within one 20-minute poll. First run bootstraps the notified set silently.
+- `digest.js` runs in `digest.yml` (Sunday 17:00 UTC) and posts a weekly recap.
+- `breathing-lib.js` holds the shared crypto + analysis (3-hold detection for
+  Wim Hof, settle/steadiness/HRV-lift for resonance) and the message composer.
+
+Message text is written by Claude via the Anthropic API when `ANTHROPIC_API_KEY`
+is set; otherwise a built-in deterministic template is used, so the pipeline
+never hard-depends on the API. `DRY_RUN=1` prints instead of sending.
+
+### Extra secrets for notifications
+
+- `SLACK_BOT_TOKEN` - Slack bot token with `chat:write` (and `im:write` to DM).
+  Missing -> messages are composed and logged but not sent.
+- `ANTHROPIC_API_KEY` - optional; enables Claude-written messages.
+- `SLACK_USER_ID` - optional; defaults to Wilhelm's DM id.
+
+Old approach (retired): an hourly claude.ai "Meditation summary" routine polled
+the raw `.enc` file. Replaced by the in-Actions notifier above.
