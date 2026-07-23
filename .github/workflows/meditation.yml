@@ -2,9 +2,14 @@ name: fetch-meditation
 
 on:
   schedule:
-    # Every 20 min, offset from fetch-fitness (which runs at 05:00) to avoid
-    # two jobs pushing to the repo at the same moment.
-    - cron: "7,27,47 * * * *"
+    # Every 5 min (GitHub's shortest interval) to minimise the polling wait
+    # once Oura has synced a session. Scheduled runs can still be delayed by
+    # GitHub under load; a webhook (repository_dispatch) is the near-realtime path.
+    - cron: "*/5 * * * *"
+  # Oura webhook -> Cloudflare Worker can fire this instantly when new session
+  # data lands, removing the polling wait entirely.
+  repository_dispatch:
+    types: [oura_new_data]
   workflow_dispatch:
     inputs:
       mark_latest_new:
