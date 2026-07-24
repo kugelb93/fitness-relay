@@ -35,7 +35,7 @@ LIFTS: one line per active staple: '<Name> <current top set> | <+Xkg wk-over-wk,
 PRIORITY: '<Lift> (at X.XXx Squat vs ~Y.YYx): next target <weight x reps>'
 FIX (max 2 beyond the priority): '<Lift>: <one concrete fix>'
 RUN: '<N> run(s), <min>m @ <avg HR> | <one-phrase trend>'
-RECOVERY: 'Readiness <today's score> today (wk avg <avg>, <trend word>), sleep <today's score> today (wk avg <avg>)' + consequence only if it changes advice. Today's score = the recovery7.days row whose day equals todayUtc; if that row is missing (ring not synced), write 'no sync yet today' in place of the today value and keep the wk avg. Always label averages as wk avg, never as a bare number that could be mistaken for today's reading.
+RECOVERY: week averages are the HEADLINE numbers, today's reading is secondary: 'Readiness <avg> wk avg (<trend word>), today <score> | sleep <avg> wk avg, today <score>' + consequence only if it changes advice. Today's score = the recovery7.days row whose day equals todayUtc; if that row is missing (ring not synced), write 'today n/a' instead. Always label which number is the average and which is today, never a bare number.
 BALANCE: only if a gap is notable. DELOAD: only if triggered.
 No repeated numbers, no methodology, no greetings or filler; one short celebratory phrase allowed in the verdict when a PR happened.
 
