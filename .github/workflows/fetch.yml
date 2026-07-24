@@ -3,7 +3,11 @@ name: fetch-fitness
 on:
   schedule:
     # 05:00 UTC daily = 07:00 Europe/Stockholm (summer), before the 07:30 brief.
+    # Second run at 08:00 UTC: Oura only exposes today's readiness/sleep after
+    # the ring has synced, so the early snapshot often carries yesterday's
+    # latest row. The mid-morning refresh catches up once the ring has synced.
     - cron: "0 5 * * *"
+    - cron: "0 8 * * *"
   workflow_dispatch: {}
 
 # Allow the job to commit fitness.json back to the repo.
