@@ -1,0 +1,25 @@
+name: weekly-coach
+
+on:
+  schedule:
+    # Monday 05:15 UTC = 07:15 Europe/Stockholm (summer), right after the
+    # 05:00 fetch-fitness run has committed a fresh snapshot.
+    - cron: "15 5 * * 1"
+  workflow_dispatch: {}
+
+jobs:
+  coach:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Compose weekly readout and DM Wilhelm as the bot
+        env:
+          FITNESS_KEY: ${{ secrets.FITNESS_KEY }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: node coach.js
