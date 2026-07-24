@@ -59,7 +59,10 @@ async function composeCoach(payload) {
     },
     body: JSON.stringify({
       model: MODEL,
-      max_tokens: 2000,
+      // Adaptive thinking is on by default on this model and counts against
+      // max_tokens (thinking + text combined). 2000 was too tight: the model
+      // spent the whole budget thinking and returned no visible text.
+      max_tokens: 16000,
       system: SYSTEM,
       messages: [{ role: "user", content: JSON.stringify(payload) }],
     }),
@@ -67,7 +70,13 @@ async function composeCoach(payload) {
   if (!res.ok) throw new Error(`anthropic ${res.status} ${await res.text().then((t) => t.slice(0, 200))}`);
   const j = await res.json();
   const text = (j.content || []).filter((c) => c.type === "text").map((c) => c.text).join("").trim();
-  if (!text) throw new Error("empty completion");
+  if (!text) {
+    // Log shape only (public Actions logs): stop_reason + block types, no content.
+    console.error(
+      `empty completion: stop_reason=${j.stop_reason} blocks=${(j.content || []).map((c) => c.type).join(",")}`
+    );
+    throw new Error(`empty completion (stop_reason=${j.stop_reason})`);
+  }
   return text;
 }
 
