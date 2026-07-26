@@ -20,6 +20,10 @@ AES-256-CBC encrypted and the workflow logs counts only, never values.
 - `OURA_TOKEN` - Oura v2 Personal Access Token
 - `FITNESS_KEY` - shared passphrase; key = sha256(passphrase). The routine holds
   the same value.
+- `INGEST_TOKEN` - OPTIONAL. Bearer token for reading Apple Health nutrition back
+  from the breathing-bot Worker (`/export/nutrition`). Same value as that
+  Worker's `INGEST_TOKEN` secret. Leave it unset and the snapshot simply carries
+  no nutrition; the coach then omits its FUEL line instead of failing.
 
 ## Decrypted payload shape
 
@@ -30,9 +34,21 @@ AES-256-CBC encrypted and the workflow logs counts only, never values.
   "runs": [{ "day": "YYYY-MM-DD", "intensity": "moderate", "distance_km": null, "duration_min": 61 }],
   "readiness": { "day": "YYYY-MM-DD", "score": 86, "hrv_balance": 82, "resting_heart_rate": 73, "recovery_index": 100 },
   "sleep": { "day": "YYYY-MM-DD", "score": 84 },
+  "nutrition": {
+    "stats": { "windows": { "d7": {}, "d14": {}, "d28": {} }, "weight": {}, "protein": {}, "energy_balance": {} },
+    "days": [{ "date": "YYYY-MM-DD", "kcal": 2980, "protein_g": 165, "carbs_g": 320, "fat_g": 95, "weight_kg": 78.4 }]
+  },
   "errors": []
 }
 ```
+
+`nutrition` is null unless `INGEST_TOKEN` is set. It comes from Apple Health, not
+an API: MacroFactor has none, so it writes into Apple Health, and Health Auto
+Export on the iPhone POSTs that to the breathing-bot Worker, which is where this
+reads it from. Every figure under `stats` is precomputed there (averages, protein
+g/kg, least-squares weight trend, inferred TDEE) with a verdict band attached, so
+the coach model reports rather than calculates. See the breathing-bot README for
+the phone-side setup.
 
 Crypto: `fitness.json.enc` = base64(iv[16] || AES-256-CBC(sha256(FITNESS_KEY), plaintext)).
 
