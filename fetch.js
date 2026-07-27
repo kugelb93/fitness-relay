@@ -527,13 +527,21 @@ async function nutrition() {
 // and its suppression, is computed in the Worker so the coach and the chat bot
 // cannot disagree and neither model does arithmetic. Returns null rather than
 // throwing on a not-yet-connected account, since that is a normal state.
+// Two independent things arrive on one response and are gated SEPARATELY on
+// purpose. The recent composition window can be empty while the long bodyweight
+// history is rich: he recorded nothing at all in April or May 2026 but has 206
+// weigh-ins back to March 2024. Gating both on stats.readings would throw away
+// two years of weight every time he skips a month.
 async function bodyComposition() {
   if (!INGEST_TOKEN) return null;
   const res = await fetch(BODY_URL, { headers: { Authorization: `Bearer ${INGEST_TOKEN}` } });
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
   const b = await res.json();
-  if (!b || !b.connected || !b.stats || !b.stats.readings) return null;
-  return b.stats;
+  if (!b || !b.connected) return { stats: null, weightHistory: null };
+  return {
+    stats: b.stats && b.stats.readings ? b.stats : null,
+    weightHistory: b.weight_history && b.weight_history.weigh_ins ? b.weight_history : null,
+  };
 }
 
 async function main() {
@@ -555,6 +563,7 @@ async function main() {
     coach: null,
     nutrition: null,
     body_comp: null,
+    weight_history: null,
     history: [],
     errors,
   };
@@ -577,7 +586,10 @@ async function main() {
       .then((r) => (out.sleep = r))
       .catch((e) => errors.push(`oura_sleep: ${e.message}`)),
     nutrition().then((r) => (out.nutrition = r)).catch((e) => errors.push(`nutrition: ${e.message}`)),
-    bodyComposition().then((r) => (out.body_comp = r)).catch((e) => errors.push(`body_comp: ${e.message}`)),
+    bodyComposition().then((r) => {
+      out.body_comp = r ? r.stats : null;
+      out.weight_history = r ? r.weightHistory : null;
+    }).catch((e) => errors.push(`body_comp: ${e.message}`)),
   ];
 
   await Promise.all(tasks);
@@ -619,6 +631,7 @@ async function main() {
       `coach=${out.coach ? `ok(${activeLifts} active lifts)` : "missing"} ` +
       `nutrition=${out.nutrition ? `ok(${out.nutrition.days.length}d)` : INGEST_TOKEN ? "none" : "off"} ` +
       `body_comp=${out.body_comp ? `ok(${out.body_comp.readings} readings)` : INGEST_TOKEN ? "none" : "off"} ` +
+      `weight_history=${out.weight_history ? `ok(${out.weight_history.weigh_ins} weigh-ins, ${out.weight_history.monthly.length}mo)` : "none"} ` +
       `history=${out.history.length}wk errors=${errors.length}`
   );
 }
