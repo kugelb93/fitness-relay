@@ -16,6 +16,21 @@ const lib = require("./breathing-lib");
 
 const MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-5";
 
+// The ledger of targets this coach set in previous weeks. It lives in the
+// breathing-bot Worker, not this repo, because coach.yml deliberately does not
+// commit: fetch.yml owns commits and two workflows pushing the same branch
+// would race. Optional in both directions, so a missing token or a Worker
+// hiccup costs the grading line and nothing else.
+const TARGETS_URL = process.env.TARGETS_URL ||
+  "https://breathing-bot.w-kugelberg.workers.dev/export/targets";
+const TARGETS_INGEST_URL = process.env.TARGETS_INGEST_URL ||
+  "https://breathing-bot.w-kugelberg.workers.dev/ingest/targets";
+const INGEST_TOKEN = process.env.INGEST_TOKEN;
+
+// Sentinel for the machine-readable trailer the model appends. Chosen to be
+// something it would never produce in prose.
+const TARGET_MARKER = "<<<TARGETS";
+
 const SYSTEM = `You are Wilhelm Kugelberg's personal strength coach. You write his Monday training readout (lifting + running), delivered as a Slack DM. He reads it on his phone in under 30 seconds.
 
 COACHING RULES (strict):
@@ -35,11 +50,14 @@ COACHING RULES (strict):
 - CYCLE TRANSITION (matters until roughly mid-Aug 2026): logged workouts keep the title they had when performed, so sessions before 2026-07-26 carry the OLD names (Legs, Pull, Chest and shoulder, Biceps/triceps). Treat those as pre-transition history, NOT as missing new sessions: map Legs/Biceps-triceps loosely to lower/arms work and Pull/Chest and shoulder to upper. Until at least four sessions with the NEW titles exist, do not report sessions as overdue; instead say the new split is bedding in and report only how many sessions he did. Once new-titled sessions dominate the last 10 days, switch to the normal overdue check.
 - NUTRITION (the input field 'nutrition'; if it is null or absent, OMIT the FUEL line entirely and say nothing at all about food, weight or macros). He logs food in MacroFactor, which writes calories, macros and bodyweight into Apple Health, and his phone pushes those to the relay. Every number arrives precomputed in nutrition.stats WITH a verdict per metric: report the verdict, never invent your own thresholds. For hypertrophy exactly three matter: weight trend percent per week (0.25-0.5%/wk is the lean-gain target), protein g/kg bodyweight (1.6-2.2 is the range), and average daily intake. This is the fuel side of the same goal as volume, so connect the two: if he is running the full cycle at 13 sets/wk for chest and quads while the weight trend is flat or negative, the limiter is FOOD not training, and saying so is the most valuable thing in that week's readout. Conversely if intake is ample but volume is short, the limiter is adherence, not eating more. Two limits to state honestly and never overstate: est_tdee_kcal is INFERRED from intake against the weight trend (7700 kcal/kg), not measured, so call it an estimate if you cite it at all; and MacroFactor's own expenditure figure and macro targets never reach Apple Health, so you cannot see them and must never imply you can. DATA QUALITY GATE: if windows.d7.coverage_pct is under about 70, or stale_days is above 2, or the weight block carries a 'note' about too few weigh-ins, say the logging is patchy in one short clause and do NOT draw a conclusion from the trend that week.
 - BODY COMPOSITION (the input field 'body_comp'; if it is null or absent, say NOTHING about muscle mass, fat mass or body fat percentage). This comes from his Withings Body Scan through the Withings API, NOT Apple Health, and it is the only source that can split a weight change into lean and fat, which on a bulk is the actual question. Use body_comp.partition: muscle_kg_per_wk and fat_kg_per_wk are the two halves of the weight trend. THE HARD RULE: when partition.verdict is null a 'verdict_withheld' string says why (too few weigh-ins), and you must then report the two numbers as PROVISIONAL and draw no conclusion whatsoever about whether the bulk is going well. Never substitute your own judgement for a withheld verdict, and never soften it into a hint. When the verdict IS present, report it as given and let it override any read of scale weight alone. Bioimpedance shifts by kilos between readings taken under different conditions, so a single reading is meaningless and even the direction needs several weeks. If body_comp.data_quality is present, add at most one short clause saying that more weigh-ins under identical morning conditions is what unlocks the verdict.
+- TARGETS (the input field 'targets': what YOU told him in previous weeks, oldest first, one record per ISO week with the priority and fix you set). This is your own memory and it is the difference between reporting and coaching. Find the record for the week just completed and GRADE IT FIRST, in the LAST WEEK line, against what the data actually shows: hit, partial, missed, or not attempted (say which). Be specific and be willing to say he did not do it. Two further duties: if you are about to set a target you already set in one of the last three weeks, say plainly that it is a repeat and that it has not moved; and if you have excused the same shortfall more than once (for example volume 'still bedding in' or a window 'reading old-split numbers'), stop excusing it and treat it as a real deficit, because a rolling window always contains some transition and that excuse can otherwise run forever. If targets is empty or absent, omit the LAST WEEK line entirely and say nothing about previous targets.
+- RECOVERY BASELINE (the input field 'recovery7.baseline'): percentiles across roughly the last year (p25, median, p75) for readiness and sleep, plus the same calendar month last year when available. Use it to say whether a number is actually high or low FOR HIM instead of leaning on a bare score, and to separate a seasonal effect from a real decline: if a run or recovery figure looks worse than recent weeks but matches the same month last year, that is a season, not a problem. Say so in one clause. Never compute your own percentiles; use only the ones given. Weekly recAvg7/sleepAvg7 in HISTORY are now backfilled across all weeks, so week-over-week recovery comparisons are reliable rather than partial.
 - RUNNING SCHEDULE IS STILL FIXED: no run plans, no assigning run days, observations and load interplay only.
-- HISTORY: one entry per ISO week, oldest first, from his full Hevy log. lifts = only lifts TRAINED that week (absent = not trained). The run happens Monday morning, so the LAST entry is the just-started week and nearly empty: compare the last COMPLETED week (second-to-last) against prior weeks. recAvg7/sleepAvg7 accumulate from late Jul 2026 (null before).
+- HISTORY: one entry per ISO week, oldest first, from his full Hevy log. lifts = only lifts TRAINED that week (absent = not trained). The run happens Monday morning, so the LAST entry is the just-started week and nearly empty: compare the last COMPLETED week (second-to-last) against prior weeks. recAvg7/sleepAvg7 are backfilled from Oura across the full 16 weeks, so treat them as complete and compare weeks freely.
 
-WEEKLY FORMAT (hard rules): at most 16 lines, roughly 140 words. No code blocks, no essays. Structure:
+WEEKLY FORMAT (hard rules): at most 17 lines, roughly 150 words. No code blocks, no essays. Structure:
 Line 1: 'Weekly coach, <Mon DD>: <five-word-max verdict>'
+LAST WEEK (omit entirely when targets is empty): 'Last week: <the target you set, abbreviated> - <hit / partial / missed / not attempted>, <one clause of evidence from the data>'
 CYCLE: '<N> sessions last 7d | next up: <session name>' plus one short clause only if a session type is 10+ days stale.
 LIFTS: one line per active staple: '<Name> <current top set> | <weight +Xkg this month, or reps NxW->MxW, or flat Nwk> | <growing / holding / stalled>' (growing = reps or weight up; holding = maintaining, fine; stalled = reps AND weight AND volume flat 3+ wks on good recovery).
 VOLUME: '<group> <N> sets/wk' for the 1-2 groups off the 10-20 landmark, naming the session that trains it if the cause is a skipped session.
@@ -55,10 +73,84 @@ MONTH IN REVIEW: ONLY when the input says isFirstMondayOfMonth is true, append b
 
 STALENESS: if the input reports staleDays > 3, open with one line that the data is stale (snapshot date given) and still coach; if staleDays > 14, output ONLY the staleness warning.
 
-FORMATTING (strict, Slack mobile): ASCII only. No emoji, no smart quotes, no en dashes, no markdown tables, no code blocks. NEVER use em dashes; use commas, colons, or parentheses. Output ONLY the readout text, nothing else.`;
+FORMATTING (strict, Slack mobile): ASCII only. No emoji, no smart quotes, no en dashes, no markdown tables, no code blocks. NEVER use em dashes; use commas, colons, or parentheses.
+
+OUTPUT: the readout text, and then, on its own final line, a machine-readable trailer recording the targets you just set so next week can grade them. Exactly this shape, nothing after it:
+<<<TARGETS {"priority":"<your PRIORITY line target in under 20 words>","fix":"<your FIX target in under 20 words>","fuel":"<any intake or protein target, else null>"} >>>
+The trailer is stripped before the message is delivered, so he never sees it. Emit it every time. Write no other commentary, preamble or explanation anywhere in the output.`;
 
 function isFirstMondayOfMonth(d) {
   return d.getUTCDay() === 1 && d.getUTCDate() <= 7;
+}
+
+// Mirrors fetch.js so ledger week keys match history week keys. Duplicated
+// rather than shared because fetch.js keeps its own copies of these helpers too;
+// if one changes, change both.
+function isoWeek(d) {
+  const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const dayNum = t.getUTCDay() || 7;
+  t.setUTCDate(t.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(t.getUTCFullYear(), 0, 1));
+  const week = Math.ceil(((t - yearStart) / 86400000 + 1) / 7);
+  return `${t.getUTCFullYear()}-W${String(week).padStart(2, "0")}`;
+}
+
+async function loadTargets() {
+  if (!INGEST_TOKEN) return [];
+  try {
+    const res = await fetch(TARGETS_URL, { headers: { Authorization: `Bearer ${INGEST_TOKEN}` } });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    const j = await res.json();
+    return Array.isArray(j.targets) ? j.targets : [];
+  } catch (e) {
+    // Never fatal: a readout without grading beats no readout.
+    console.error(`targets load failed, continuing without grading: ${e.message}`);
+    return [];
+  }
+}
+
+async function saveTargets(rec) {
+  if (!INGEST_TOKEN || !rec || !rec.week) return false;
+  try {
+    const res = await fetch(TARGETS_INGEST_URL, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${INGEST_TOKEN}`, "content-type": "application/json" },
+      body: JSON.stringify(rec),
+    });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    return true;
+  } catch (e) {
+    console.error(`targets save failed: ${e.message}`);
+    return false;
+  }
+}
+
+// Everything from the marker onward is cut unconditionally, parseable or not, so
+// a malformed trailer can never reach Slack. Worst case we lose one week of
+// grading, which is strictly better than posting JSON at him.
+function splitTargets(text, week) {
+  const at = text.indexOf(TARGET_MARKER);
+  if (at === -1) {
+    console.error("no targets trailer in completion; nothing stored for next week");
+    return { message: text.trim(), targets: null };
+  }
+  const message = text.slice(0, at).trim();
+  const raw = text.slice(at + TARGET_MARKER.length).replace(/>>>[\s\S]*$/, "").trim();
+  try {
+    const o = JSON.parse(raw);
+    return {
+      message,
+      targets: {
+        week,
+        priority: o.priority == null ? null : String(o.priority),
+        fix: o.fix == null ? null : String(o.fix),
+        fuel: o.fuel == null ? null : String(o.fuel),
+      },
+    };
+  } catch (e) {
+    console.error(`targets trailer unparseable, message sent without storing: ${e.message}`);
+    return { message, targets: null };
+  }
 }
 
 async function composeCoach(payload) {
@@ -134,14 +226,23 @@ async function main() {
     // above. null until the account is connected and has readings, in which
     // case the FUEL line simply carries no lean/fat clause.
     body_comp: snap.body_comp || null,
+    // What this coach told him in previous weeks, so it can grade itself instead
+    // of starting from nothing every Monday. Empty on the first run.
+    targets: await loadTargets(),
   };
 
-  const msg = await composeCoach(payload);
+  const raw = await composeCoach(payload);
+  const { message: msg, targets } = splitTargets(raw, isoWeek(now));
   await lib.postSlack(msg);
+  // Stored only after a successful send, so a failed DM cannot leave a target
+  // recorded that he never received and would be graded on next week.
+  const stored = await saveTargets(targets);
   console.log(
     `sent weekly readout (monthReview=${payload.isFirstMondayOfMonth} staleDays=${staleDays} ` +
       `nutrition=${payload.nutrition ? "ok" : "none"} ` +
-      `body_comp=${payload.body_comp ? "ok" : "none"} chars=${msg.length} model=${MODEL})`
+      `body_comp=${payload.body_comp ? "ok" : "none"} ` +
+      `targetsIn=${payload.targets.length}wk targetsStored=${stored} ` +
+      `chars=${msg.length} model=${MODEL})`
   );
 }
 
