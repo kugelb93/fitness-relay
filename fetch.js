@@ -36,6 +36,14 @@ const NUTRITION_URL = process.env.NUTRITION_URL ||
   "https://breathing-bot.w-kugelberg.workers.dev/export/nutrition";
 const INGEST_TOKEN = process.env.INGEST_TOKEN;
 
+// Body composition takes a different road on purpose. Withings has a real public
+// API, so the Worker talks to it directly instead of waiting on an Apple Health
+// push, and Apple Health will not carry muscle mass at all. Muscle mass is the
+// number that makes a weight change interpretable, so the detour is the point.
+// Independently optional: absent body comp must not disturb nutrition.
+const BODY_URL = process.env.BODY_URL ||
+  "https://breathing-bot.w-kugelberg.workers.dev/export/body?days=28";
+
 // ---- crypto helpers (key = sha256(passphrase); base64(iv || AES-256-CBC)) --
 function keyFromPassphrase(pass) {
   return crypto.createHash("sha256").update(pass).digest();
@@ -447,6 +455,19 @@ async function nutrition() {
   };
 }
 
+// The lean-vs-fat split of the weight trend. Every figure, including the verdict
+// and its suppression, is computed in the Worker so the coach and the chat bot
+// cannot disagree and neither model does arithmetic. Returns null rather than
+// throwing on a not-yet-connected account, since that is a normal state.
+async function bodyComposition() {
+  if (!INGEST_TOKEN) return null;
+  const res = await fetch(BODY_URL, { headers: { Authorization: `Bearer ${INGEST_TOKEN}` } });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  const b = await res.json();
+  if (!b || !b.connected || !b.stats || !b.stats.readings) return null;
+  return b.stats;
+}
+
 async function main() {
   const passphrase = process.env.FITNESS_KEY;
   if (!passphrase) {
@@ -465,6 +486,7 @@ async function main() {
     recovery7: null,
     coach: null,
     nutrition: null,
+    body_comp: null,
     history: [],
     errors,
   };
@@ -487,6 +509,7 @@ async function main() {
       .then((r) => (out.sleep = r))
       .catch((e) => errors.push(`oura_sleep: ${e.message}`)),
     nutrition().then((r) => (out.nutrition = r)).catch((e) => errors.push(`nutrition: ${e.message}`)),
+    bodyComposition().then((r) => (out.body_comp = r)).catch((e) => errors.push(`body_comp: ${e.message}`)),
   ];
 
   await Promise.all(tasks);
@@ -520,6 +543,7 @@ async function main() {
       `recovery7=${out.recovery7 ? "ok" : "missing"} ` +
       `coach=${out.coach ? `ok(${activeLifts} active lifts)` : "missing"} ` +
       `nutrition=${out.nutrition ? `ok(${out.nutrition.days.length}d)` : INGEST_TOKEN ? "none" : "off"} ` +
+      `body_comp=${out.body_comp ? `ok(${out.body_comp.readings} readings)` : INGEST_TOKEN ? "none" : "off"} ` +
       `history=${out.history.length}wk errors=${errors.length}`
   );
 }
