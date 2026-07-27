@@ -34,4 +34,8 @@ jobs:
           FITNESS_KEY: ${{ secrets.FITNESS_KEY }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Reads and writes the targets ledger on the breathing-bot Worker, so
+          # the coach can grade last week's target. Optional: without it the
+          # readout simply omits the LAST WEEK line.
+          INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
         run: node coach.js
