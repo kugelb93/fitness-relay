@@ -8,10 +8,13 @@
 //  - set-level detail (last 3 sessions per active lift, incl. RPE when logged)
 //  - 28-day muscle balance
 // plus `history`: one compact entry per ISO week (kept in history.json.enc,
-// also committed) so the coach can diff this week against previous weeks.
+// also committed) so the coach can diff this week against previous weeks,
+// and `nutrition`: intake, macros and bodyweight from Apple Health via the
+// breathing-bot Worker (optional, see NUTRITION_URL below).
 //
 // Tokens come from env (GitHub Actions secrets): HEVY_API_KEY, OURA_TOKEN,
-// FITNESS_KEY (encryption passphrase). Node 18+ (built-in fetch).
+// FITNESS_KEY (encryption passphrase), INGEST_TOKEN (optional, nutrition).
+// Node 18+ (built-in fetch).
 
 const fs = require("fs");
 const crypto = require("crypto");
@@ -22,6 +25,16 @@ const OURA = "https://api.ouraring.com/v2/usercollection";
 const HEVY = "https://api.hevyapp.com/v1";
 const ACTIVE_DAYS = 35;
 const HISTORY_WEEKS = 16;
+
+// Nutrition + bodyweight originate in MacroFactor, which has no public API. It
+// writes them into Apple Health, Apple Health is device-local with no server
+// endpoint, so his iPhone (Health Auto Export) POSTs them to the breathing-bot
+// Worker and we read them back from there. OPTIONAL by design: with no
+// INGEST_TOKEN set the snapshot simply carries no nutrition and the coach omits
+// the section, rather than the whole readout failing.
+const NUTRITION_URL = process.env.NUTRITION_URL ||
+  "https://breathing-bot.w-kugelberg.workers.dev/export/nutrition";
+const INGEST_TOKEN = process.env.INGEST_TOKEN;
 
 // ---- crypto helpers (key = sha256(passphrase); base64(iv || AES-256-CBC)) --
 function keyFromPassphrase(pass) {
@@ -418,6 +431,22 @@ async function ouraLatest(endpoint, startDaysAgo, pick) {
   return pick(latest);
 }
 
+// Precomputed intake/weight stats plus a 28-day row window. The Worker does the
+// averaging, regression and TDEE inference so both consumers see identical
+// numbers and neither the coach model nor the chat model does arithmetic.
+async function nutrition() {
+  if (!INGEST_TOKEN) return null;
+  const res = await fetch(NUTRITION_URL, { headers: { Authorization: `Bearer ${INGEST_TOKEN}` } });
+  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  const body = await res.json();
+  if (!body || !body.stats || !body.stats.logged_days) return null;
+  const cutoff = isoDate(daysAgo(28));
+  return {
+    stats: body.stats,
+    days: (body.rows || []).filter((r) => r.date >= cutoff),
+  };
+}
+
 async function main() {
   const passphrase = process.env.FITNESS_KEY;
   if (!passphrase) {
@@ -435,6 +464,7 @@ async function main() {
     sleep: null,
     recovery7: null,
     coach: null,
+    nutrition: null,
     history: [],
     errors,
   };
@@ -456,6 +486,7 @@ async function main() {
     ouraLatest("daily_sleep", 2, (r) => ({ day: r.day, score: r.score }))
       .then((r) => (out.sleep = r))
       .catch((e) => errors.push(`oura_sleep: ${e.message}`)),
+    nutrition().then((r) => (out.nutrition = r)).catch((e) => errors.push(`nutrition: ${e.message}`)),
   ];
 
   await Promise.all(tasks);
@@ -488,6 +519,7 @@ async function main() {
       `readiness=${out.readiness ? "ok" : "missing"} sleep=${out.sleep ? "ok" : "missing"} ` +
       `recovery7=${out.recovery7 ? "ok" : "missing"} ` +
       `coach=${out.coach ? `ok(${activeLifts} active lifts)` : "missing"} ` +
+      `nutrition=${out.nutrition ? `ok(${out.nutrition.days.length}d)` : INGEST_TOKEN ? "none" : "off"} ` +
       `history=${out.history.length}wk errors=${errors.length}`
   );
 }
