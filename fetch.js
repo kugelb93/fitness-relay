@@ -544,6 +544,55 @@ async function bodyComposition() {
   };
 }
 
+// A rest day is a day with NO lifting session and NO run. Computed here, not left
+// to the model: it is a set intersection across two sources plus date arithmetic,
+// which is exactly the shape of question a model answers confidently and wrongly.
+//
+// TODAY IS EXCLUDED throughout. An untrained day that is still in progress is not
+// a rest day, it is an unfinished one, and counting it would let him "meet" the
+// target every morning before he has done anything. Same lesson as the partial
+// nutrition day that once reported him 800 kcal under.
+function restDays(strength, runs, sourcesOk) {
+  const trained = new Set();
+  for (const s of strength || []) if (s.date) trained.add(s.date);
+  for (const r of runs || []) if (r.day) trained.add(r.day);
+
+  const window = [];
+  for (let i = 1; i <= 7; i++) window.push(isoDate(daysAgo(i)));
+  const rest = window.filter((d) => !trained.has(d));
+
+  // Consecutive trained days ending yesterday, and how long since the last full
+  // rest day. Both walk back 30 days, which is far past anything actionable.
+  let streak = 0;
+  for (let i = 1; i <= 30; i++) {
+    if (trained.has(isoDate(daysAgo(i)))) streak++;
+    else break;
+  }
+  let sinceRest = null;
+  for (let i = 1; i <= 30; i++) {
+    if (!trained.has(isoDate(daysAgo(i)))) { sinceRest = i; break; }
+  }
+
+  return {
+    window_days: 7,
+    excludes_today: true,
+    rest_days: rest.length,
+    rest_dates: rest,
+    trained_days: 7 - rest.length,
+    consecutive_training_days: streak,
+    days_since_rest_day: sinceRest,
+    target: "at least 1 complete rest day (no lifting, no run) in every 7 days",
+    // A failed source makes trained days INVISIBLE, which inflates rest days and
+    // would quietly report a perfect rest week during an outage. Absence of data
+    // is not evidence of rest, so the verdict is withheld rather than guessed.
+    sources_complete: !!sourcesOk,
+    meets_target: sourcesOk ? rest.length >= 1 : null,
+    ...(sourcesOk ? {} : {
+      note: "a data source failed this run, so trained days may be missing and rest days overcounted; draw no conclusion about rest this week",
+    }),
+  };
+}
+
 async function main() {
   const passphrase = process.env.FITNESS_KEY;
   if (!passphrase) {
@@ -564,6 +613,7 @@ async function main() {
     nutrition: null,
     body_comp: null,
     weight_history: null,
+    rest: null,
     history: [],
     errors,
   };
@@ -593,6 +643,13 @@ async function main() {
   ];
 
   await Promise.all(tasks);
+
+  // Needs both sources, so it runs after the fan-out rather than inside it, and
+  // it must know whether either source failed: a missing run day looks exactly
+  // like a rest day.
+  const restSourcesOk =
+    !errors.some((e) => e.startsWith("hevy")) && !errors.some((e) => e.startsWith("oura_runs"));
+  out.rest = restDays(out.strength, out.runs, restSourcesOk);
 
   // Weekly history: decrypt the committed file, fold in this week, keep 16.
   let history = [];
@@ -632,6 +689,7 @@ async function main() {
       `nutrition=${out.nutrition ? `ok(${out.nutrition.days.length}d)` : INGEST_TOKEN ? "none" : "off"} ` +
       `body_comp=${out.body_comp ? `ok(${out.body_comp.readings} readings)` : INGEST_TOKEN ? "none" : "off"} ` +
       `weight_history=${out.weight_history ? `ok(${out.weight_history.weigh_ins} weigh-ins, ${out.weight_history.monthly.length}mo)` : "none"} ` +
+      `rest=${out.rest.rest_days}/7d${out.rest.meets_target ? "" : " BELOW TARGET"} ` +
       `history=${out.history.length}wk errors=${errors.length}`
   );
 }
