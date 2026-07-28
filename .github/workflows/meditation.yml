@@ -46,7 +46,15 @@ jobs:
           MARK_LATEST_NEW: ${{ inputs.mark_latest_new && '1' || '' }}
         run: node meditation.js
 
+      # main ONLY, and this one is about not lying to him rather than about git.
+      # The notified-set lives in the repo, so a branch checkout carries whatever
+      # snapshot that branch was cut from. A branch run therefore sees already
+      # announced sessions as new and RE-SENDS them: verifying this workflow on a
+      # branch based one day back duplicated a session summary in his DMs.
+      # DRY_RUN is no protection, since notify.js posts to Slack first and only
+      # uses the flag to decide whether to record the send.
       - name: Notify new sessions to Slack
+        if: github.ref == 'refs/heads/main'
         env:
           FITNESS_KEY: ${{ secrets.FITNESS_KEY }}
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -54,7 +62,11 @@ jobs:
           RESEND_LATEST: ${{ inputs.resend_latest && '1' || '' }}
         run: node notify.js
 
+      # main only, same reasoning as fetch.yml: a branch dispatch is for verifying
+      # code, and committing from one creates a rival snapshot that conflicts with
+      # main's on every open PR.
       - name: Commit if changed
+        if: github.ref == 'refs/heads/main'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

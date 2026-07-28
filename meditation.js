@@ -35,6 +35,29 @@ function decryptFile(path, key) {
   return JSON.parse(Buffer.concat([dec.update(buf.subarray(16)), dec.final()]).toString("utf8"));
 }
 
+// Each write above takes a FRESH RANDOM IV, so re-encrypting byte-identical data
+// still lands a different file, and generated_at moves every run regardless. This
+// script polls every few minutes, so writing unconditionally meant a commit and a
+// push on EVERY poll: 12 of 20 commits on main in a single day carried no new
+// information, including a run that logged "no new sessions" and committed anyway.
+// Compare the decrypted payload minus the moving stamp, and skip a no-op write.
+function encryptToFileIfChanged(path, obj, key) {
+  const stable = (o) => {
+    if (!o || typeof o !== "object" || Array.isArray(o)) return JSON.stringify(o);
+    const { generated_at, ...rest } = o;
+    return JSON.stringify(rest);
+  };
+  if (fs.existsSync(path)) {
+    try {
+      if (stable(decryptFile(path, key)) === stable(obj)) return false;
+    } catch {
+      // Unreadable, truncated, or written under a different key: rewrite it.
+    }
+  }
+  encryptToFile(path, obj, key);
+  return true;
+}
+
 const round = (n, d = 0) => Math.round(n * Math.pow(10, d)) / Math.pow(10, d);
 const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
 const isoDate = (d) => d.toISOString().slice(0, 10);
@@ -226,12 +249,13 @@ async function main() {
     },
   };
 
-  encryptToFile(OUT_FILE, out, key);
+  const wrote = encryptToFileIfChanged(OUT_FILE, out, key);
 
   // Log counts only - never values, since Actions logs are public.
   const fresh = sessions.filter((s) => s.first_seen === now).length;
   console.log(
-    `Wrote ${OUT_FILE}: sessions=${sessions.length} new_this_run=${fresh}` +
+    `${wrote ? "Wrote" : "Unchanged, skipped"} ${OUT_FILE}: ` +
+      `sessions=${sessions.length} new_this_run=${fresh}` +
       (prevSeen === null ? " (bootstrap: all marked old)" : "")
   );
 }
