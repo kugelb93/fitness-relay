@@ -54,7 +54,11 @@ jobs:
           RESEND_LATEST: ${{ inputs.resend_latest && '1' || '' }}
         run: node notify.js
 
+      # main only, same reasoning as fetch.yml: a branch dispatch is for verifying
+      # code, and committing from one creates a rival snapshot that conflicts with
+      # main's on every open PR.
       - name: Commit if changed
+        if: github.ref == 'refs/heads/main'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
