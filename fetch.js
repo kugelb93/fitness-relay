@@ -544,6 +544,50 @@ async function bodyComposition() {
   };
 }
 
+// The weekly plan he set on 2026-07-28. Sunday-indexed to match getUTCDay().
+// HYBRID by design: the weekday says what today SHOULD be, but a missed session
+// is never skipped, it goes to the front of the queue. Pure weekdays are what
+// produced chest at 4 sets/wk before the July rebuild, because a named day is
+// skippable while a queue position is not.
+const DOW = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const WEEK_PLAN = {
+  1: "Upper A", 2: "Lower A", 3: "Rest", 4: "Run (hard intervals)",
+  5: "Upper B", 6: "Run (long easy)", 0: "Lower B",
+};
+const CYCLE_SESSIONS = ["Upper A", "Lower A", "Upper B", "Lower B"];
+
+// Weekday arithmetic is computed HERE and never by the model: it has a proven
+// habit of shifting weekdays by one when it derives them from a date itself.
+function cycleStatus(strength) {
+  const now = new Date();
+  const dow = now.getUTCDay();
+  const daysSince = {};
+  for (const name of CYCLE_SESSIONS) {
+    const hit = (strength || [])
+      .filter((s) => s.title && s.date && s.title.toLowerCase().includes(name.toLowerCase()))
+      .sort((a, b) => b.date.localeCompare(a.date))[0];
+    daysSince[name] = hit
+      ? Math.round((new Date(isoDate(now) + "T00:00:00Z") - new Date(hit.date + "T00:00:00Z")) / 86400000)
+      : null;
+  }
+  // Never performed sorts ahead of everything: it is the most overdue there is.
+  const overdue = [...CYCLE_SESSIONS].sort(
+    (a, b) => (daysSince[b] == null ? 1e6 : daysSince[b]) - (daysSince[a] == null ? 1e6 : daysSince[a])
+  );
+  return {
+    today: isoDate(now),
+    today_is: DOW[dow],
+    scheduled_today: WEEK_PLAN[dow],
+    scheduled_tomorrow: WEEK_PLAN[(dow + 1) % 7],
+    plan: Object.fromEntries(Object.keys(WEEK_PLAN).map((k) => [DOW[k], WEEK_PLAN[k]])),
+    days_since_session: daysSince,
+    most_overdue: overdue[0],
+    // The last 8 sessions are the only window, so anything beyond that reads as
+    // null rather than as a large number.
+    lookback_sessions: (strength || []).length,
+  };
+}
+
 // A rest day is a day with NO lifting session and NO run. Computed here, not left
 // to the model: it is a set intersection across two sources plus date arithmetic,
 // which is exactly the shape of question a model answers confidently and wrongly.
@@ -614,6 +658,7 @@ async function main() {
     body_comp: null,
     weight_history: null,
     rest: null,
+    cycle: null,
     history: [],
     errors,
   };
@@ -650,6 +695,7 @@ async function main() {
   const restSourcesOk =
     !errors.some((e) => e.startsWith("hevy")) && !errors.some((e) => e.startsWith("oura_runs"));
   out.rest = restDays(out.strength, out.runs, restSourcesOk);
+  out.cycle = cycleStatus(out.strength);
 
   // Weekly history: decrypt the committed file, fold in this week, keep 16.
   let history = [];
@@ -689,7 +735,8 @@ async function main() {
       `nutrition=${out.nutrition ? `ok(${out.nutrition.days.length}d)` : INGEST_TOKEN ? "none" : "off"} ` +
       `body_comp=${out.body_comp ? `ok(${out.body_comp.readings} readings)` : INGEST_TOKEN ? "none" : "off"} ` +
       `weight_history=${out.weight_history ? `ok(${out.weight_history.weigh_ins} weigh-ins, ${out.weight_history.monthly.length}mo)` : "none"} ` +
-      `rest=${out.rest.rest_days}/7d${out.rest.meets_target ? "" : " BELOW TARGET"} ` +
+      `rest=${out.rest.rest_days}/7d${out.rest.meets_target === false ? " BELOW TARGET" : ""} ` +
+      `cycle=${out.cycle.today_is}:${out.cycle.scheduled_today} overdue=${out.cycle.most_overdue} ` +
       `history=${out.history.length}wk errors=${errors.length}`
   );
 }
