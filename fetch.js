@@ -544,15 +544,26 @@ async function bodyComposition() {
   };
 }
 
-// The weekly plan he set on 2026-07-28. Sunday-indexed to match getUTCDay().
+// The weekly plan, revised 2026-07-29. Sunday-indexed to match getUTCDay().
+//
+// The arrangement is deliberate, not arbitrary. Hard intervals sit NEXT TO the
+// rest day so they are bounded by rest on one side and an upper day on the other,
+// touching no leg session either side; an earlier draft put them the day after
+// Lower A, which he rightly rejected. The long easy run follows Saturday's Lower B
+// rather than preceding a leg day, because running before squats compromises the
+// session that actually drives quad growth. Legs land Tue and Sat (4 days then 3),
+// upper Mon and Fri (4 then 3), both inside the productive window.
+//
+// Six sessions in seven days means six CONSECUTIVE training days (Thu-Tue) is by
+// design, not a warning sign. The rest rule's streak threshold accounts for this.
 // HYBRID by design: the weekday says what today SHOULD be, but a missed session
 // is never skipped, it goes to the front of the queue. Pure weekdays are what
 // produced chest at 4 sets/wk before the July rebuild, because a named day is
 // skippable while a queue position is not.
 const DOW = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const WEEK_PLAN = {
-  1: "Upper A", 2: "Lower A", 3: "Rest", 4: "Run (hard intervals)",
-  5: "Upper B", 6: "Run (long easy)", 0: "Lower B",
+  0: "Run (long easy)", 1: "Upper A", 2: "Lower A", 3: "Rest",
+  4: "Run (hard intervals)", 5: "Upper B", 6: "Lower B",
 };
 const CYCLE_SESSIONS = ["Upper A", "Lower A", "Upper B", "Lower B"];
 
