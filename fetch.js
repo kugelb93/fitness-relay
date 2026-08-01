@@ -120,12 +120,14 @@ function ouraRange(startDaysAgo) {
   return `start_date=${isoDate(daysAgo(startDaysAgo))}&end_date=${isoDate(daysAgo(-1))}`;
 }
 
-// 15 sessions rather than 8: the rest-day log below looks back 10 days, and at
+// 20 sessions rather than 8: the rest-day log below looks back 10 days, and at
 // 6 sessions a week (or a two-a-day) 8 sessions can cover fewer days than that,
-// which would make the tail of the window read as falsely rested.
+// which would make the tail of the window read as falsely rested. Two pages
+// because Hevy caps pageSize at 10 (a single pageSize=15 request 400s).
 async function hevyStrength() {
-  const data = await getJSON(`${HEVY}/workouts?page=1&pageSize=15`, { "api-key": HEVY_KEY });
-  return (data.workouts || []).map((w) => ({
+  const pages = await Promise.all([1, 2].map((p) =>
+    getJSON(`${HEVY}/workouts?page=${p}&pageSize=10`, { "api-key": HEVY_KEY })));
+  return pages.flatMap((d) => d.workouts || []).map((w) => ({
     date: w.start_time ? stockholmDay(w.start_time) : null,
     title: w.title,
   }));
@@ -615,7 +617,7 @@ function cycleStatus(strength) {
     plan: Object.fromEntries(Object.keys(WEEK_PLAN).map((k) => [DOW[k], WEEK_PLAN[k]])),
     days_since_session: daysSince,
     most_overdue: overdue[0],
-    // The last ~15 sessions are the only window, so anything beyond that reads
+    // The last ~20 sessions are the only window, so anything beyond that reads
     // as null rather than as a large number.
     lookback_sessions: (strength || []).length,
   };
