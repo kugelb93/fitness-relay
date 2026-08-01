@@ -15,9 +15,11 @@ const MED = "meditation.json.enc";
 
 function isoDaysAgo(n) { return new Date(Date.now() - n * 86400000).toISOString().slice(0, 10); }
 
+// Only holds the HR curve actually shows; a flat or gappy session contributes
+// nothing rather than three invented rounds.
 function holdsOf(s) {
   const iv = (s.hr && s.hr.series) ? (s.hr.interval_s || 5) : 60;
-  return lib.threeHolds((s.hr && s.hr.series) || (s.hr && s.hr.minutes) || [], iv);
+  return lib.detectHolds((s.hr && s.hr.series) || (s.hr && s.hr.minutes) || [], iv).holds;
 }
 
 async function main() {

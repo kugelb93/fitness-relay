@@ -66,6 +66,25 @@ function isoDate(d) {
 function daysAgo(n) {
   return new Date(Date.now() - n * 86400000);
 }
+// All day-level bookkeeping (which date a workout belongs to, what "today" and
+// "yesterday" mean) is in HIS timezone. Slicing a UTC timestamp shifts a
+// workout logged just after local midnight onto the previous day, which is one
+// of the ways rest days got misreported.
+const STHLM = "Europe/Stockholm";
+function stockholmDay(iso) {
+  return new Date(iso).toLocaleDateString("en-CA", { timeZone: STHLM });
+}
+function stockholmToday() {
+  return new Date().toLocaleDateString("en-CA", { timeZone: STHLM });
+}
+// Weekday attached in code wherever a date ships to a model: deriving weekdays
+// from dates is a proven model failure mode.
+function dowOf(day) {
+  return new Date(day + "T12:00:00Z").toLocaleDateString("en-US", { weekday: "short", timeZone: STHLM });
+}
+function dayMinus(day, n) {
+  return isoDate(new Date(new Date(day + "T12:00:00Z").getTime() - n * 86400000));
+}
 // ISO-8601 week id, e.g. "2026-W30".
 function isoWeek(d) {
   const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
@@ -101,10 +120,13 @@ function ouraRange(startDaysAgo) {
   return `start_date=${isoDate(daysAgo(startDaysAgo))}&end_date=${isoDate(daysAgo(-1))}`;
 }
 
+// 15 sessions rather than 8: the rest-day log below looks back 10 days, and at
+// 6 sessions a week (or a two-a-day) 8 sessions can cover fewer days than that,
+// which would make the tail of the window read as falsely rested.
 async function hevyStrength() {
-  const data = await getJSON(`${HEVY}/workouts?page=1&pageSize=8`, { "api-key": HEVY_KEY });
+  const data = await getJSON(`${HEVY}/workouts?page=1&pageSize=15`, { "api-key": HEVY_KEY });
   return (data.workouts || []).map((w) => ({
-    date: (w.start_time || "").slice(0, 10),
+    date: w.start_time ? stockholmDay(w.start_time) : null,
     title: w.title,
   }));
 }
@@ -124,7 +146,7 @@ async function hevyAllPages(ep, field, ps) {
 }
 
 const round = (n, d = 1) => Math.round(n * Math.pow(10, d)) / Math.pow(10, d);
-const daySlice = (i) => i.slice(0, 10);
+const daySlice = (i) => stockholmDay(i);
 const daysSince = (i) => Math.floor((Date.now() - new Date(i)) / 86400000);
 const e1rm = (w, r) => (!w || !r ? 0 : w * (1 + r / 30));
 const setVol = (sets) => sets.reduce((v, s) => v + (s.weight_kg || 0) * (s.reps || 0), 0);
@@ -570,15 +592,15 @@ const CYCLE_SESSIONS = ["Upper A", "Lower A", "Upper B", "Lower B"];
 // Weekday arithmetic is computed HERE and never by the model: it has a proven
 // habit of shifting weekdays by one when it derives them from a date itself.
 function cycleStatus(strength) {
-  const now = new Date();
-  const dow = now.getUTCDay();
+  const today = stockholmToday();
+  const dow = new Date(today + "T12:00:00Z").getUTCDay();
   const daysSince = {};
   for (const name of CYCLE_SESSIONS) {
     const hit = (strength || [])
       .filter((s) => s.title && s.date && s.title.toLowerCase().includes(name.toLowerCase()))
       .sort((a, b) => b.date.localeCompare(a.date))[0];
     daysSince[name] = hit
-      ? Math.round((new Date(isoDate(now) + "T00:00:00Z") - new Date(hit.date + "T00:00:00Z")) / 86400000)
+      ? Math.round((new Date(today + "T00:00:00Z") - new Date(hit.date + "T00:00:00Z")) / 86400000)
       : null;
   }
   // Never performed sorts ahead of everything: it is the most overdue there is.
@@ -586,15 +608,15 @@ function cycleStatus(strength) {
     (a, b) => (daysSince[b] == null ? 1e6 : daysSince[b]) - (daysSince[a] == null ? 1e6 : daysSince[a])
   );
   return {
-    today: isoDate(now),
+    today,
     today_is: DOW[dow],
     scheduled_today: WEEK_PLAN[dow],
     scheduled_tomorrow: WEEK_PLAN[(dow + 1) % 7],
     plan: Object.fromEntries(Object.keys(WEEK_PLAN).map((k) => [DOW[k], WEEK_PLAN[k]])),
     days_since_session: daysSince,
     most_overdue: overdue[0],
-    // The last 8 sessions are the only window, so anything beyond that reads as
-    // null rather than as a large number.
+    // The last ~15 sessions are the only window, so anything beyond that reads
+    // as null rather than as a large number.
     lookback_sessions: (strength || []).length,
   };
 }
@@ -608,31 +630,49 @@ function cycleStatus(strength) {
 // target every morning before he has done anything. Same lesson as the partial
 // nutrition day that once reported him 800 kcal under.
 function restDays(strength, runs, sourcesOk) {
-  const trained = new Set();
-  for (const s of strength || []) if (s.date) trained.add(s.date);
-  for (const r of runs || []) if (r.day) trained.add(r.day);
+  const liftedBy = {};
+  for (const s of strength || []) if (s.date) (liftedBy[s.date] = liftedBy[s.date] || []).push(s.title || "lift");
+  const ranBy = {};
+  for (const r of runs || []) if (r.day) (ranBy[r.day] = ranBy[r.day] || []).push({
+    duration_min: r.duration_min, ...(r.avg_hr != null ? { avg_hr: r.avg_hr } : {}),
+  });
+  const trained = new Set([...Object.keys(liftedBy), ...Object.keys(ranBy)]);
+  const today = stockholmToday();
+
+  // Day-by-day log, yesterday first, TODAY EXCLUDED. This is the ONLY thing a
+  // consumer should read when it names a specific day as trained or rested: it
+  // carries the weekday precomputed, and rested is the two-source intersection
+  // (no Hevy lift AND no Oura run) that models kept getting wrong on their own.
+  const days = [];
+  for (let i = 1; i <= 10; i++) {
+    const d = dayMinus(today, i);
+    const lifted = liftedBy[d] || [];
+    const dayRuns = ranBy[d] || [];
+    days.push({ date: d, dow: dowOf(d), lifted, runs: dayRuns, rested: !lifted.length && !dayRuns.length });
+  }
 
   const window = [];
-  for (let i = 1; i <= 7; i++) window.push(isoDate(daysAgo(i)));
+  for (let i = 1; i <= 7; i++) window.push(dayMinus(today, i));
   const rest = window.filter((d) => !trained.has(d));
 
   // Consecutive trained days ending yesterday, and how long since the last full
   // rest day. Both walk back 30 days, which is far past anything actionable.
   let streak = 0;
   for (let i = 1; i <= 30; i++) {
-    if (trained.has(isoDate(daysAgo(i)))) streak++;
+    if (trained.has(dayMinus(today, i))) streak++;
     else break;
   }
   let sinceRest = null;
   for (let i = 1; i <= 30; i++) {
-    if (!trained.has(isoDate(daysAgo(i)))) { sinceRest = i; break; }
+    if (!trained.has(dayMinus(today, i))) { sinceRest = i; break; }
   }
 
   return {
     window_days: 7,
     excludes_today: true,
+    days,
     rest_days: rest.length,
-    rest_dates: rest,
+    rest_dates: rest.map((d) => ({ date: d, dow: dowOf(d) })),
     trained_days: 7 - rest.length,
     consecutive_training_days: streak,
     days_since_rest_day: sinceRest,

@@ -47,11 +47,17 @@ function smooth(items, w) {
   return out;
 }
 
-// Wilhelm always does exactly 3 Wim Hof rounds. Find up to 3 deepest HR troughs
-// separated by >=120s, skipping the first 60s (settling, not a hold). Fewer
-// than 3 visible = sensor gap, not a skipped round.
-function threeHolds(hrItems, iv) {
-  if (!hrItems || !hrItems.length || !iv) return [];
+// Breath-hold detection from the HR curve, with NO assumed round count. A hold
+// counts only when the HR genuinely dips and recovers around it (prominence >=
+// PROM_MIN bpm, calibrated against his real sessions: true holds read 5-17,
+// noise/drift reads 0-4). Troughs must be >=120s apart; the first 60s is
+// settling, not a hold. Returns what the curve actually shows plus a quality
+// verdict, so a flat or gappy session is reported as inconclusive instead of
+// being narrated as "3 rounds".
+function detectHolds(hrItems, iv) {
+  const none = (note) => ({ holds: [], coverage_pct: 0, quality: "inconclusive", note });
+  if (!hrItems || !hrItems.length || !iv) return none("no HR samples in the session");
+  const coverage = Math.round((100 * hrItems.filter((v) => v != null && v > 0).length) / hrItems.length);
   const sm = smooth(interp(hrItems, Math.round(20 / iv)), Math.max(1, Math.round(8 / iv)));
   const sep = Math.round(120 / iv), skip = Math.round(60 / iv), win = Math.round(20 / iv);
   const cands = [];
@@ -64,10 +70,32 @@ function threeHolds(hrItems, iv) {
   const picked = [];
   for (const c of cands) {
     if (picked.every((p) => Math.abs(p.i - c.i) >= sep)) picked.push(c);
-    if (picked.length === 3) break;
+    if (picked.length === 8) break; // runaway guard, not an expected count
   }
   picked.sort((a, b) => a.i - b.i);
-  return picked.map((p) => ({ min: r1((p.i * iv) / 60), hr: r1(p.v) }));
+  const PROM_MIN = 5, PROM_WEAK = 3;
+  const peakOf = (a, b) => {
+    const seg = sm.slice(Math.max(0, a), Math.min(sm.length, b + 1)).filter((v) => v != null);
+    return seg.length ? Math.max(...seg) : null;
+  };
+  const holds = [];
+  let weak = 0;
+  for (let k = 0; k < picked.length; k++) {
+    const p = picked[k];
+    const lp = peakOf(k === 0 ? 0 : picked[k - 1].i, p.i);
+    const rp = peakOf(p.i, k === picked.length - 1 ? sm.length - 1 : picked[k + 1].i);
+    const prom = lp != null && rp != null ? r1(Math.min(lp, rp) - p.v) : null;
+    if (prom != null && prom >= PROM_MIN) holds.push({ min: r1((p.i * iv) / 60), hr: r1(p.v), prominence: prom });
+    else if (prom != null && prom >= PROM_WEAK) weak++;
+  }
+  if (coverage < 40) return { holds, coverage_pct: coverage, quality: "inconclusive", note: "HR coverage under 40%, too sparse to read holds reliably" };
+  if (!holds.length) {
+    return { holds, coverage_pct: coverage, quality: "inconclusive", note: weak
+      ? "only weak dips in the HR curve, cannot distinguish holds from drift"
+      : "no clear breath-hold dips visible in the HR curve" };
+  }
+  if (coverage < 70) return { holds, coverage_pct: coverage, quality: "partial", note: "HR coverage is patchy, further holds may be hidden in the gaps" };
+  return { holds, coverage_pct: coverage, quality: "good" };
 }
 
 // Resonance: settle time (first minute HR clearly below start), mid-session
@@ -107,7 +135,11 @@ function analyzeSession(s, stats) {
     baseline: stats && stats.practices && stats.practices[s.practice],
   };
   if (s.practice === "wim_hof") {
-    a.holds = threeHolds((s.hr && s.hr.series) || (s.hr && s.hr.minutes) || [], (s.hr && s.hr.series) ? iv : 60);
+    const d = detectHolds((s.hr && s.hr.series) || (s.hr && s.hr.minutes) || [], (s.hr && s.hr.series) ? iv : 60);
+    a.holds = d.holds;
+    a.holds_quality = d.quality;
+    a.hr_coverage_pct = d.coverage_pct;
+    if (d.note) a.holds_note = d.note;
   } else {
     a.resonance = resonanceMetrics(s);
   }
@@ -134,7 +166,7 @@ Rules:
 - Header: *<Practice>: <duration> min at <HH:MM>* and add " (yesterday, <Mon DD>)" if not_today is true. Practice label: "Wim Hof" or "Resonance".
 - ASCII PUNCTUATION ONLY: plain : and , ; no smart quotes, en/em dashes, ellipsis char, or non-breaking spaces. Plain hyphen-space bullets. At most 1 emoji.
 - Numbers over adjectives. Warm, direct, specific.
-- Wim Hof: he always does exactly 3 rounds. Never state a round count as a finding. Report the visible hold lows (holds[].hr at holds[].min) and which was deepest; note the HRV peak. If fewer than 3 holds are present that is a sensor gap, say which were visible. Below 60 bpm is a deep hold for him, below 50 exceptional.
+- Wim Hof: holds[] lists the breath-hold dips ACTUALLY DETECTED in the HR curve (hr low at minute, with prominence), holds_quality says how trustworthy the read is (good / partial / inconclusive), and holds_note explains why when it is not good. Report only what was detected: the visible hold lows and which was deepest, plus the HRV peak. NEVER assume or state a round count that is not in holds[] - do not say "3 rounds" or fill in rounds the curve does not show. If holds_quality is "partial", add that more holds may be hidden in sensor gaps. If "inconclusive", say plainly that the HR data was inconclusive this session (use holds_note) and skip the hold analysis rather than guessing. Below 60 bpm is a deep hold for him, below 50 exceptional.
 - Resonance: report settle speed and steadiness, and HRV lift across the session (resonance.hrv_lift, positive = good).
 - Compare only to the SAME-practice baseline in baseline.avg_* . Never cross practices.
 - Time-of-day feedback from time_of_day: morning=set up the day; midday=afternoon reset and note his midday Wim Hof runs deepest; evening=unwind; late=pre-sleep (resonance supports sleep onset, best before ~22:00 with a 20-30 min buffer, after ~22:30 tends to delay his onset; late Wim Hof is activating, if HR ended high suggest slow breathing before bed).
@@ -180,13 +212,13 @@ function templateSession(a) {
   const L = [`*${label}: ${Math.round(a.duration_min)} min at ${a.start_local}*${when}`];
   if (a.practice === "wim_hof") {
     const h = a.holds || [];
-    if (h.length) {
+    if (h.length && a.holds_quality !== "inconclusive") {
       const lows = h.map((x) => x.hr);
       const deepIdx = lows.indexOf(Math.min(...lows));
-      L.push(`- Holds: lows of ${lows.join(", ")} bpm; round ${deepIdx + 1} was deepest.`);
-      if (h.length < 3) L.push(`- Only ${h.length} of 3 holds showed clearly in the data (sensor gap on the rest).`);
+      L.push(`- ${h.length} hold${h.length > 1 ? "s" : ""} visible in the HR curve: lows of ${lows.join(", ")} bpm; the one at min ${h[deepIdx].min} was deepest.`);
+      if (a.holds_quality === "partial") L.push(`- HR coverage was patchy (${a.hr_coverage_pct}%), more holds may be hidden in the gaps.`);
     } else {
-      L.push(`- Holds: sensor coverage was too sparse to read the retention dips this time.`);
+      L.push(`- Hold readout: inconclusive this time (${a.holds_note || "the HR curve did not show clear retention dips"}).`);
     }
     if (a.hrv.max != null) L.push(`- HRV peaked at ${a.hrv.max} during the session.`);
     if (a.baseline && a.baseline.avg_hrv != null && a.hrv.avg != null)
@@ -234,6 +266,6 @@ async function postSlack(text) {
 
 module.exports = {
   avg, r1, keyFromPassphrase, decryptFile, encryptToFile,
-  analyzeSession, threeHolds, resonanceMetrics, timeOfDay, localHour,
+  analyzeSession, detectHolds, resonanceMetrics, timeOfDay, localHour,
   compose, postSlack, templateSession, templateDigest, monDD,
 };
