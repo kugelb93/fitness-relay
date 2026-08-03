@@ -157,6 +157,10 @@ function splitTargets(text, week) {
 }
 
 async function composeOnce(payload, effort, maxTokens) {
+  // Streamed, not buffered: at effort=high the model can think for several
+  // minutes, and a non-streaming request sends no bytes until the whole
+  // completion is done, which trips Node's default fetch timeouts. Streaming
+  // delivers deltas continuously, so wall-clock length stops mattering.
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -167,28 +171,47 @@ async function composeOnce(payload, effort, maxTokens) {
     body: JSON.stringify({
       model: MODEL,
       // Adaptive thinking is on by default on this model and counts against
-      // max_tokens (thinking + text combined). 16000 at the default effort
-      // (high) was exhausted entirely by thinking on 2026-08-03, a
-      // first-Monday run where the prompt also demands MONTH IN REVIEW: the
-      // completion came back with zero visible text. Effort is the lever
-      // that bounds thinking spend, so pin it below the default and keep
-      // max_tokens comfortably above any plausible thinking + readout size.
+      // max_tokens (thinking + text combined). 16000 was exhausted entirely
+      // by thinking on 2026-08-03 (a first-Monday run, where the prompt also
+      // demands MONTH IN REVIEW), so the budget is now sized for a long
+      // think plus the readout with plenty of slack.
       max_tokens: maxTokens,
       output_config: { effort },
+      stream: true,
       system: SYSTEM,
       messages: [{ role: "user", content: JSON.stringify(payload) }],
     }),
   });
   if (!res.ok) throw new Error(`anthropic ${res.status} ${await res.text().then((t) => t.slice(0, 200))}`);
-  const j = await res.json();
-  const text = (j.content || []).filter((c) => c.type === "text").map((c) => c.text).join("").trim();
+
+  const decoder = new TextDecoder();
+  let buf = "";
+  let text = "";
+  let stopReason = null;
+  for await (const chunk of res.body) {
+    buf += decoder.decode(chunk, { stream: true });
+    let nl;
+    while ((nl = buf.indexOf("\n")) !== -1) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line.startsWith("data:")) continue;
+      let ev;
+      try { ev = JSON.parse(line.slice(5)); } catch { continue; }
+      if (ev.type === "error") {
+        throw new Error(`anthropic stream error: ${ev.error && ev.error.type}`);
+      } else if (ev.type === "content_block_delta" && ev.delta && ev.delta.type === "text_delta") {
+        text += ev.delta.text;
+      } else if (ev.type === "message_delta" && ev.delta && ev.delta.stop_reason) {
+        stopReason = ev.delta.stop_reason;
+      }
+    }
+  }
+  text = text.trim();
   if (!text) {
-    // Log shape only (public Actions logs): stop_reason + block types, no content.
-    console.error(
-      `empty completion (effort=${effort}): stop_reason=${j.stop_reason} blocks=${(j.content || []).map((c) => c.type).join(",")}`
-    );
-    const err = new Error(`empty completion (stop_reason=${j.stop_reason})`);
-    err.stopReason = j.stop_reason;
+    // Log shape only (public Actions logs): stop_reason, no content.
+    console.error(`empty completion (effort=${effort}): stop_reason=${stopReason}`);
+    const err = new Error(`empty completion (stop_reason=${stopReason})`);
+    err.stopReason = stopReason;
     throw err;
   }
   return text;
@@ -196,14 +219,15 @@ async function composeOnce(payload, effort, maxTokens) {
 
 async function composeCoach(payload) {
   try {
-    return await composeOnce(payload, "medium", 32000);
+    return await composeOnce(payload, "high", 64000);
   } catch (e) {
     // The one failure mode seen in the wild is thinking eating the whole
-    // budget (stop_reason=max_tokens, no text). Retry once at low effort,
-    // which cuts thinking to near nothing; anything else is a real error.
+    // budget (stop_reason=max_tokens, no text). At 64k that should be
+    // unreachable, but if it happens, one retry at medium effort trades
+    // thinking depth for a guaranteed readout; anything else is a real error.
     if (e.stopReason !== "max_tokens") throw e;
-    console.error("retrying once at effort=low after max_tokens exhaustion");
-    return await composeOnce(payload, "low", 32000);
+    console.error("retrying once at effort=medium after max_tokens exhaustion");
+    return await composeOnce(payload, "medium", 64000);
   }
 }
 
