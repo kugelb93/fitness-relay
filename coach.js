@@ -156,7 +156,7 @@ function splitTargets(text, week) {
   }
 }
 
-async function composeCoach(payload) {
+async function composeOnce(payload, effort, maxTokens) {
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
@@ -167,9 +167,14 @@ async function composeCoach(payload) {
     body: JSON.stringify({
       model: MODEL,
       // Adaptive thinking is on by default on this model and counts against
-      // max_tokens (thinking + text combined). 2000 was too tight: the model
-      // spent the whole budget thinking and returned no visible text.
-      max_tokens: 16000,
+      // max_tokens (thinking + text combined). 16000 at the default effort
+      // (high) was exhausted entirely by thinking on 2026-08-03, a
+      // first-Monday run where the prompt also demands MONTH IN REVIEW: the
+      // completion came back with zero visible text. Effort is the lever
+      // that bounds thinking spend, so pin it below the default and keep
+      // max_tokens comfortably above any plausible thinking + readout size.
+      max_tokens: maxTokens,
+      output_config: { effort },
       system: SYSTEM,
       messages: [{ role: "user", content: JSON.stringify(payload) }],
     }),
@@ -180,11 +185,26 @@ async function composeCoach(payload) {
   if (!text) {
     // Log shape only (public Actions logs): stop_reason + block types, no content.
     console.error(
-      `empty completion: stop_reason=${j.stop_reason} blocks=${(j.content || []).map((c) => c.type).join(",")}`
+      `empty completion (effort=${effort}): stop_reason=${j.stop_reason} blocks=${(j.content || []).map((c) => c.type).join(",")}`
     );
-    throw new Error(`empty completion (stop_reason=${j.stop_reason})`);
+    const err = new Error(`empty completion (stop_reason=${j.stop_reason})`);
+    err.stopReason = j.stop_reason;
+    throw err;
   }
   return text;
+}
+
+async function composeCoach(payload) {
+  try {
+    return await composeOnce(payload, "medium", 32000);
+  } catch (e) {
+    // The one failure mode seen in the wild is thinking eating the whole
+    // budget (stop_reason=max_tokens, no text). Retry once at low effort,
+    // which cuts thinking to near nothing; anything else is a real error.
+    if (e.stopReason !== "max_tokens") throw e;
+    console.error("retrying once at effort=low after max_tokens exhaustion");
+    return await composeOnce(payload, "low", 32000);
+  }
 }
 
 async function main() {
