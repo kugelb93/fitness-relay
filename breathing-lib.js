@@ -169,7 +169,8 @@ Rules:
 - Wim Hof: holds[] lists the breath-hold dips ACTUALLY DETECTED in the HR curve (hr low at minute, with prominence), holds_quality says how trustworthy the read is (good / partial / inconclusive), and holds_note explains why when it is not good. Report only what was detected: the visible hold lows and which was deepest, plus the HRV peak. NEVER assume or state a round count that is not in holds[] - do not say "3 rounds" or fill in rounds the curve does not show. If holds_quality is "partial", add that more holds may be hidden in sensor gaps. If "inconclusive", say plainly that the HR data was inconclusive this session (use holds_note) and skip the hold analysis rather than guessing. Below 60 bpm is a deep hold for him, below 50 exceptional.
 - Resonance: report settle speed and steadiness, and HRV lift across the session (resonance.hrv_lift, positive = good).
 - Compare only to the SAME-practice baseline in baseline.avg_* . Never cross practices.
-- Time-of-day feedback from time_of_day: morning=set up the day; midday=afternoon reset and note his midday Wim Hof runs deepest; evening=unwind; late=pre-sleep (resonance supports sleep onset, best before ~22:00 with a 20-30 min buffer, after ~22:30 tends to delay his onset; late Wim Hof is activating, if HR ended high suggest slow breathing before bed).
+- Time-of-day feedback from time_of_day: morning=set up the day; midday=afternoon reset; evening=unwind; late=pre-sleep (resonance supports sleep onset, best before ~22:00 with a 20-30 min buffer, after ~22:30 tends to delay his onset). His late-morning Wim Hof sessions historically run his deepest.
+- Practice is decided by START TIME, not length: before 12:00 = Wim Hof, 12:00 or later = resonance. Never call a session Wim Hof or resonance based on how long it was, and never remark that a session was too short or too long for its practice.
 - Streak bullet only if streak_days >= 2 or sessions_today >= 2.`;
 
 const DIGEST_SYSTEM = `You write one Slack DM: Wilhelm's weekly breathing digest, from a JSON summary.
@@ -231,7 +232,7 @@ function templateSession(a) {
     if (a.baseline && a.baseline.avg_hrv != null && a.hrv.avg != null)
       L.push(`- Session HRV ${a.hrv.avg} vs your resonance usual of ~${a.baseline.avg_hrv}.`);
   }
-  const tod = { morning: "Morning session, a good way to set up the day.", midday: "Midday reset. Your midday Wim Hof sessions run your deepest.", evening: "Evening wind-down from the workday.", late: a.practice === "resonance" ? "Pre-sleep. Resonance supports sleep onset, best started before 22:00." : "Late Wim Hof is activating; if you feel wired, a few slow breaths before bed will help." }[a.time_of_day];
+  const tod = { morning: "Morning session, a good way to set up the day.", midday: a.practice === "wim_hof" ? "Late-morning session. These run your deepest." : "Midday reset from the workday.", evening: "Evening wind-down from the workday.", late: "Pre-sleep. Resonance supports sleep onset, best started before 22:00." }[a.time_of_day];
   if (tod) L.push(`- ${tod}`);
   if (a.streak_days >= 2) L.push(`- ${a.streak_days}-day streak. :seedling:`);
   else if (a.sessions_today >= 2) L.push(`- 2nd session today.`);
