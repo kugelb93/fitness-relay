@@ -58,7 +58,7 @@ Run manually: Actions tab > fetch-fitness > Run workflow.
 
 A second workflow (`.github/workflows/meditation.yml`, every 20 min) runs
 `meditation.js`: it pulls the Oura `session` endpoint (last 21 days), classifies
-each session by duration (under 14 min = resonance breathing, 14+ = Wim Hof),
+each session by start time (before noon = Wim Hof, midday onwards = resonance),
 computes per-session stats (HR/HRV start-end-min-max, per-minute averages, and
 the full raw series for the 6 most recent sessions) plus per-practice baselines
 and streaks, and commits `meditation.json.enc` (same crypto, same `FITNESS_KEY`).

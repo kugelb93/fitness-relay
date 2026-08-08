@@ -125,10 +125,14 @@ function seriesStats(ts, includeFull, durMin) {
   };
 }
 
-// Wilhelm's convention: under 14 min = resonance breathing, 14+ = Wim Hof.
-function practiceOf(durMin) {
-  if (durMin == null) return null;
-  return durMin < 14 ? "resonance" : "wim_hof";
+// Wilhelm's convention: practice follows TIME OF DAY, not length. Sessions
+// before noon are Wim Hof, midday onwards is resonance. Oura returns
+// start_datetime in local time with its offset, so the hour read straight out
+// of the string is already the local hour.
+function practiceOf(startDatetime) {
+  const hour = parseInt(String(startDatetime || "").slice(11, 13), 10);
+  if (Number.isNaN(hour)) return null;
+  return hour < 12 ? "wim_hof" : "resonance";
 }
 
 function toCompact(s, includeFull) {
@@ -139,7 +143,7 @@ function toCompact(s, includeFull) {
   return {
     id: s.id,
     type: s.type,
-    practice: practiceOf(durMin),
+    practice: practiceOf(s.start_datetime),
     day: s.day,
     start: s.start_datetime,
     end: s.end_datetime,
