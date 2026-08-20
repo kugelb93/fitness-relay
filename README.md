@@ -25,6 +25,17 @@ AES-256-CBC encrypted and the workflow logs counts only, never values.
   Worker's `INGEST_TOKEN` secret. Leave it unset and the snapshot simply carries
   no nutrition; the coach then omits its FUEL line instead of failing.
 
+## Lifting sessions exclude mirrored runs
+
+Since 2026-08-20 breathing-bot writes every Oura-detected run into Hevy as a
+workout (one "Running" exercise, template `AC1BB830`, titled `Running
+(intervals)` / `Running (same speed)`) so his Hevy calendar shows run days as
+well as lifting days. Those rows are not lifting sessions, so `fetch.js` drops
+them (`isRunMirror`) before anything counts sessions: `strength`, the rest-day
+log, `sessionsLast7/28`, `perWeek` and the weekly session history. Runs continue
+to reach the coach from Oura, unchanged. Remove that filter and a two-run week
+reads as six lifting sessions.
+
 ## Decrypted payload shape
 
 ```json
