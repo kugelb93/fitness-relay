@@ -120,6 +120,22 @@ function ouraRange(startDaysAgo) {
   return `start_date=${isoDate(daysAgo(startDaysAgo))}&end_date=${isoDate(daysAgo(-1))}`;
 }
 
+// Hevy now also holds Wilhelm's RUNS: since 2026-08-20 breathing-bot mirrors
+// every Oura-detected run into a Hevy workout (one "Running" exercise, template
+// AC1BB830) purely so his Hevy calendar shows run days too. Those rows are NOT
+// lifting sessions, so every count that says "sessions" has to drop them, or a
+// two-run week reads as six lifting sessions and the cycle/volume advice is
+// built on a number that is wrong. Runs still reach the coach from Oura, where
+// they always came from. Same predicate as isRunWorkout in the Worker: title or
+// template, because either alone has a hole.
+const HEVY_RUN_TEMPLATE_ID = "AC1BB830";
+function isRunMirror(w) {
+  if (!w) return false;
+  const ex = w.exercises || [];
+  if (ex.length && ex.every((e) => e.exercise_template_id === HEVY_RUN_TEMPLATE_ID)) return true;
+  return /^running\b/i.test(String(w.title || "").trim());
+}
+
 // 20 sessions rather than 8: the rest-day log below looks back 10 days, and at
 // 6 sessions a week (or a two-a-day) 8 sessions can cover fewer days than that,
 // which would make the tail of the window read as falsely rested. Two pages
@@ -127,7 +143,7 @@ function ouraRange(startDaysAgo) {
 async function hevyStrength() {
   const pages = await Promise.all([1, 2].map((p) =>
     getJSON(`${HEVY}/workouts?page=${p}&pageSize=10`, { "api-key": HEVY_KEY })));
-  return pages.flatMap((d) => d.workouts || []).map((w) => ({
+  return pages.flatMap((d) => d.workouts || []).filter((w) => !isRunMirror(w)).map((w) => ({
     date: w.start_time ? stockholmDay(w.start_time) : null,
     title: w.title,
   }));
@@ -191,7 +207,7 @@ function setStr(s) {
 
 async function hevyCoachAnalysis() {
   const templates = await hevyAllPages("exercise_templates", "exercise_templates", 100);
-  let workouts = await hevyAllPages("workouts", "workouts", 10);
+  let workouts = (await hevyAllPages("workouts", "workouts", 10)).filter((w) => !isRunMirror(w));
   workouts.sort((a, b) => new Date(b.start_time) - new Date(a.start_time));
   const tpl = new Map(templates.map((t) => [t.id, t]));
   const muscleOf = (ex) => (tpl.get(ex.exercise_template_id) || {}).primary_muscle_group || "other";
