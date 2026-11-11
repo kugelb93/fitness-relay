@@ -2,10 +2,21 @@ name: weekly-coach
 
 on:
   schedule:
-    # Monday 05:15 UTC = 07:15 Europe/Stockholm (summer), right after the
-    # 05:00 fetch-fitness run has committed a fresh snapshot.
+    # FALLBACK ONLY: nominally Monday 05:15 UTC, in practice GitHub has started
+    # it between 10:44 and 13:52 UTC, so the "07:15" readout arrived after lunch.
+    # coach.js skips this run when the dispatch below already sent the week's
+    # readout (it checks the targets ledger), so the two never double-send.
     - cron: "15 5 * * 1"
+  # The punctual path, fired by the breathing-bot Worker on Monday morning:
+  #   POST /repos/kugelb93/fitness-relay/dispatches  {"event_type":"weekly_coach"}
+  repository_dispatch:
+    types: [weekly_coach]
   workflow_dispatch: {}
+
+# One readout at a time: a dispatch and a late cron must not compose in parallel.
+concurrency:
+  group: weekly-coach
+  cancel-in-progress: false
 
 jobs:
   coach:
@@ -27,6 +38,7 @@ jobs:
           OURA_TOKEN: ${{ secrets.OURA_TOKEN }}
           FITNESS_KEY: ${{ secrets.FITNESS_KEY }}
           INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
+          ENC_FORMAT: ${{ vars.ENC_FORMAT }}
         run: node fetch.js
 
       - name: Compose weekly readout and DM Wilhelm as the bot

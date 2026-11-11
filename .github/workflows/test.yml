@@ -1,0 +1,22 @@
+name: test
+
+# Code changes only. The snapshot commits are pushed with the default
+# GITHUB_TOKEN, which does not trigger workflows, so this does not run twice a
+# day for ciphertext.
+on:
+  push:
+    paths-ignore: ["*.enc", "**.md"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: npm test

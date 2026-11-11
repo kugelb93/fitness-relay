@@ -2,12 +2,19 @@ name: fetch-fitness
 
 on:
   schedule:
-    # 05:00 UTC daily = 07:00 Europe/Stockholm (summer), before the 07:30 brief.
-    # Second run at 08:00 UTC: Oura only exposes today's readiness/sleep after
-    # the ring has synced, so the early snapshot often carries yesterday's
-    # latest row. The mid-morning refresh catches up once the ring has synced.
+    # FALLBACK ONLY. These are nominally 05:00 and 08:00 UTC, but GitHub starts
+    # scheduled runs when it has capacity: measured over Oct-Nov 2026 the "05:00"
+    # run landed between 09:00 and 13:30 UTC and never once before the 07:30
+    # brief. Cron is also UTC, so even on time it drifts an hour against
+    # Stockholm at each DST change. The punctual path is the dispatch below.
     - cron: "0 5 * * *"
     - cron: "0 8 * * *"
+  # Fired by the breathing-bot Worker, whose own cron triggers run on time:
+  #   POST /repos/kugelb93/fitness-relay/dispatches  {"event_type":"fetch_fitness"}
+  # A dispatch starts within seconds, which is what makes the snapshot fresh
+  # before the brief reads it.
+  repository_dispatch:
+    types: [fetch_fitness]
   workflow_dispatch: {}
 
 # Allow the job to commit fitness.json back to the repo.
@@ -36,6 +43,9 @@ jobs:
           # Reads Apple Health nutrition back from the breathing-bot Worker.
           # Optional: unset means the snapshot carries no nutrition section.
           INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
+          # Repo VARIABLE, not a secret. Unset = v1 (CBC). Set to "v2" only after
+          # the brief routine can read v2; see "Crypto" in the README.
+          ENC_FORMAT: ${{ vars.ENC_FORMAT }}
         run: node fetch.js
 
       # main only. A branch dispatch is for verifying a code change against real
@@ -54,3 +64,12 @@ jobs:
           else
             echo "No change in fitness.json.enc or history.json.enc"
           fi
+
+      # Same ciphertext to the Worker, so readers can move off this public repo
+      # (docs/worker-contract.md, step 5). main only, like the commit above, and
+      # never fatal: git stays the source of truth until the switch.
+      - name: Mirror snapshot to the Worker
+        if: github.ref == 'refs/heads/main'
+        env:
+          INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
+        run: node mirror.js fitness.json.enc history.json.enc

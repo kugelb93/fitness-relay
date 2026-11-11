@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 // Polls Oura for meditation/breathing sessions and writes meditation.json.enc.
-// Runs every ~20 min in GitHub Actions; the hourly "Meditation summary" cloud
-// routine (claude.ai) decrypts the file and DMs Wilhelm when a NEW session has
-// appeared since its previous run.
+// Runs hourly in GitHub Actions (and instantly on an oura_new_data dispatch);
+// notify.js then DMs Wilhelm about any session it has not announced yet.
 //
 // "New" is tracked via first_seen: every session id keeps the timestamp of the
 // relay run that first saw it. On the very first run (no previous file) all
@@ -11,7 +10,6 @@
 // Env (GitHub Actions secrets): OURA_TOKEN, FITNESS_KEY. Node 18+.
 
 const fs = require("fs");
-const crypto = require("crypto");
 
 const OURA = "https://api.ouraring.com/v2/usercollection";
 const OURA_TOKEN = process.env.OURA_TOKEN;
@@ -19,44 +17,9 @@ const OUT_FILE = "meditation.json.enc";
 const LOOKBACK_DAYS = 21; // enough history for "vs your usual" comparisons
 const EPOCH = "1970-01-01T00:00:00Z";
 
-// ---- crypto helpers (same scheme as fetch.js) ------------------------------
-function keyFromPassphrase(pass) {
-  return crypto.createHash("sha256").update(pass).digest();
-}
-function encryptToFile(path, obj, key) {
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv("aes-256-cbc", key, iv);
-  const enc = Buffer.concat([cipher.update(JSON.stringify(obj), "utf8"), cipher.final()]);
-  fs.writeFileSync(path, Buffer.concat([iv, enc]).toString("base64") + "\n");
-}
-function decryptFile(path, key) {
-  const buf = Buffer.from(fs.readFileSync(path, "utf8").trim(), "base64");
-  const dec = crypto.createDecipheriv("aes-256-cbc", key, buf.subarray(0, 16));
-  return JSON.parse(Buffer.concat([dec.update(buf.subarray(16)), dec.final()]).toString("utf8"));
-}
-
-// Each write above takes a FRESH RANDOM IV, so re-encrypting byte-identical data
-// still lands a different file, and generated_at moves every run regardless. This
-// script polls every few minutes, so writing unconditionally meant a commit and a
-// push on EVERY poll: 12 of 20 commits on main in a single day carried no new
-// information, including a run that logged "no new sessions" and committed anyway.
-// Compare the decrypted payload minus the moving stamp, and skip a no-op write.
-function encryptToFileIfChanged(path, obj, key) {
-  const stable = (o) => {
-    if (!o || typeof o !== "object" || Array.isArray(o)) return JSON.stringify(o);
-    const { generated_at, ...rest } = o;
-    return JSON.stringify(rest);
-  };
-  if (fs.existsSync(path)) {
-    try {
-      if (stable(decryptFile(path, key)) === stable(obj)) return false;
-    } catch {
-      // Unreadable, truncated, or written under a different key: rewrite it.
-    }
-  }
-  encryptToFile(path, obj, key);
-  return true;
-}
+// Crypto (and the skip-a-no-op-write guard, which exists because this script
+// polls and would otherwise commit on every run) lives in crypto-lib.js.
+const { keyFromPassphrase, decryptFile, encryptToFileIfChanged } = require("./crypto-lib");
 
 const round = (n, d = 0) => Math.round(n * Math.pow(10, d)) / Math.pow(10, d);
 const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);

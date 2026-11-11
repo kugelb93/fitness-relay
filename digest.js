@@ -30,6 +30,10 @@ async function main() {
 
   const snap = lib.decryptFile(MED, key);
   const sessions = (snap.sessions || []).filter((s) => s.day);
+  // Dormant practice: nothing in the whole 21-day window means he has already
+  // had the zero-week notes and a fourth "0 sessions" DM is nagging, not news.
+  // The digest resumes by itself the week a session appears.
+  if (!sessions.length) { console.log("no sessions in the window; practice dormant, digest not sent"); return; }
   const from = isoDaysAgo(6), to = new Date().toISOString().slice(0, 10);
   const week = sessions.filter((s) => s.day >= from);
   const prior = sessions.filter((s) => s.day < from); // rest of the 21-day window
