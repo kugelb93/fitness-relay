@@ -17,7 +17,6 @@
 // Node 18+ (built-in fetch).
 
 const fs = require("fs");
-const crypto = require("crypto");
 
 const HEVY_KEY = process.env.HEVY_API_KEY;
 const OURA_TOKEN = process.env.OURA_TOKEN;
@@ -44,21 +43,9 @@ const INGEST_TOKEN = process.env.INGEST_TOKEN;
 const BODY_URL = process.env.BODY_URL ||
   "https://breathing-bot.w-kugelberg.workers.dev/export/body?days=28";
 
-// ---- crypto helpers (key = sha256(passphrase); base64(iv || AES-256-CBC)) --
-function keyFromPassphrase(pass) {
-  return crypto.createHash("sha256").update(pass).digest();
-}
-function encryptToFile(path, obj, key) {
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv("aes-256-cbc", key, iv);
-  const enc = Buffer.concat([cipher.update(JSON.stringify(obj), "utf8"), cipher.final()]);
-  fs.writeFileSync(path, Buffer.concat([iv, enc]).toString("base64") + "\n");
-}
-function decryptFile(path, key) {
-  const buf = Buffer.from(fs.readFileSync(path, "utf8").trim(), "base64");
-  const dec = crypto.createDecipheriv("aes-256-cbc", key, buf.subarray(0, 16));
-  return JSON.parse(Buffer.concat([dec.update(buf.subarray(16)), dec.final()]).toString("utf8"));
-}
+// Crypto lives in crypto-lib.js (v1 CBC and v2 scrypt+GCM, both readable).
+const { keyFromPassphrase, encryptToFile, decryptFile } = require("./crypto-lib");
+const program = require("./program");
 
 function isoDate(d) {
   return d.toISOString().slice(0, 10);
@@ -297,6 +284,17 @@ async function hevyCoachAnalysis() {
     const wk = weekOf(daySlice(w.start_time));
     sessionsByWeek[wk] = (sessionsByWeek[wk] || 0) + 1;
   }
+  // Sets per muscle group per ISO week. The 28-day balance above cannot answer
+  // "did he hit 10 chest sets LAST week", which is what a graded target needs.
+  const muscleSetsByWeek = {};
+  for (const w of workouts) {
+    const wk = weekOf(daySlice(w.start_time));
+    const slot = (muscleSetsByWeek[wk] = muscleSetsByWeek[wk] || {});
+    for (const ex of w.exercises || []) {
+      const n = (ex.sets || []).length;
+      if (n) slot[muscleOf(ex)] = (slot[muscleOf(ex)] || 0) + n;
+    }
+  }
   const liftsByWeek = {};
   for (const t in hist) {
     for (const x of hist[t]) {
@@ -326,6 +324,7 @@ async function hevyCoachAnalysis() {
       sessions: sessionsByWeek[wk] || 0,
       perWeek: round(cnt28 / 4, 1),
       lifts: liftsByWeek[wk] || {},
+      muscleSets: muscleSetsByWeek[wk] || {},
     });
   }
 
@@ -600,17 +599,15 @@ async function bodyComposition() {
 // is never skipped, it goes to the front of the queue. Pure weekdays are what
 // produced chest at 4 sets/wk before the July rebuild, because a named day is
 // skippable while a queue position is not.
-const DOW = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-const WEEK_PLAN = {
-  0: "Run (long easy)", 1: "Upper A", 2: "Lower A", 3: "Rest",
-  4: "Run (hard intervals)", 5: "Upper B", 6: "Lower B",
-};
-const CYCLE_SESSIONS = ["Upper A", "Lower A", "Upper B", "Lower B"];
+// The plan itself is data, in program.json, shared with the coach prompt.
+const PROGRAM = program.load();
+const DOW = program.DOW;
+const WEEK_PLAN = program.weekPlan(PROGRAM);
+const CYCLE_SESSIONS = PROGRAM.cycle;
 
 // Weekday arithmetic is computed HERE and never by the model: it has a proven
 // habit of shifting weekdays by one when it derives them from a date itself.
-function cycleStatus(strength) {
-  const today = stockholmToday();
+function cycleStatus(strength, today = stockholmToday()) {
   const dow = new Date(today + "T12:00:00Z").getUTCDay();
   const daysSince = {};
   for (const name of CYCLE_SESSIONS) {
@@ -647,7 +644,7 @@ function cycleStatus(strength) {
 // a rest day, it is an unfinished one, and counting it would let him "meet" the
 // target every morning before he has done anything. Same lesson as the partial
 // nutrition day that once reported him 800 kcal under.
-function restDays(strength, runs, sourcesOk) {
+function restDays(strength, runs, sourcesOk, today = stockholmToday()) {
   const liftedBy = {};
   for (const s of strength || []) if (s.date) (liftedBy[s.date] = liftedBy[s.date] || []).push(s.title || "lift");
   const ranBy = {};
@@ -655,7 +652,6 @@ function restDays(strength, runs, sourcesOk) {
     duration_min: r.duration_min, ...(r.avg_hr != null ? { avg_hr: r.avg_hr } : {}),
   });
   const trained = new Set([...Object.keys(liftedBy), ...Object.keys(ranBy)]);
-  const today = stockholmToday();
 
   // Day-by-day log, yesterday first, TODAY EXCLUDED. This is the ONLY thing a
   // consumer should read when it names a specific day as trained or rested: it
@@ -810,7 +806,14 @@ async function main() {
   );
 }
 
-main().catch((e) => {
-  console.error("Fatal:", e.message);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((e) => {
+    console.error("Fatal:", e.message);
+    process.exit(1);
+  });
+}
+
+module.exports = {
+  isoWeek, stockholmDay, stockholmToday, dowOf, dayMinus, isRunMirror,
+  regressionTrendPct, restDays, cycleStatus, buildHistory,
+};

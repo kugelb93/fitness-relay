@@ -1,28 +1,11 @@
 // Shared helpers for the breathing notifier + weekly digest that run in
-// GitHub Actions. Crypto matches fetch.js/meditation.js (AES-256-CBC, key =
-// sha256(FITNESS_KEY), base64(iv||ct)). Analysis mirrors what the old
+// GitHub Actions. Crypto is re-exported from crypto-lib.js. Analysis mirrors what the old
 // claude.ai routines did, so message content is unchanged after the move.
-
-const fs = require("fs");
-const crypto = require("crypto");
 
 const avg = (a) => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : null);
 const r1 = (n) => (n == null ? null : Math.round(n * 10) / 10);
 
-function keyFromPassphrase(pass) {
-  return crypto.createHash("sha256").update(pass).digest();
-}
-function decryptFile(path, key) {
-  const buf = Buffer.from(fs.readFileSync(path, "utf8").trim(), "base64");
-  const dec = crypto.createDecipheriv("aes-256-cbc", key, buf.subarray(0, 16));
-  return JSON.parse(Buffer.concat([dec.update(buf.subarray(16)), dec.final()]).toString("utf8"));
-}
-function encryptToFile(path, obj, key) {
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv("aes-256-cbc", key, iv);
-  const enc = Buffer.concat([cipher.update(JSON.stringify(obj), "utf8"), cipher.final()]);
-  fs.writeFileSync(path, Buffer.concat([iv, enc]).toString("base64") + "\n");
-}
+const { keyFromPassphrase, decryptFile, encryptToFile } = require("./crypto-lib");
 
 // ---- analysis --------------------------------------------------------------
 function interp(items, maxGap) {

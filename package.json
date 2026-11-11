@@ -1,0 +1,9 @@
+{
+  "name": "fitness-relay",
+  "private": true,
+  "description": "Relay and coach: Hevy + Oura + nutrition -> encrypted snapshot -> Slack",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "test": "node --test"
+  }
+}

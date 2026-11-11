@@ -48,7 +48,9 @@ async function main() {
   const fresh = sessions.filter((s) => !notified.has(s.id));
   if (!fresh.length) { console.log("no new sessions"); return; }
 
-  const today = new Date().toISOString().slice(0, 10);
+  // HIS day, not UTC's: a 00:30 session is "today" in Stockholm while UTC still
+  // says yesterday, and the summary would be labelled a day late.
+  const today = new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Stockholm" });
   let sent = 0;
   for (const s of fresh) {
     try {

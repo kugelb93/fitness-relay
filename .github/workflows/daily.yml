@@ -1,0 +1,49 @@
+name: daily-line
+
+on:
+  # No cron on purpose. GitHub starts "05:00" scheduled runs around noon, and a
+  # morning line that lands after lunch is noise. The breathing-bot Worker fires
+  # this on time each morning:
+  #   POST /repos/kugelb93/fitness-relay/dispatches  {"event_type":"daily_line"}
+  # Until the Worker sends that, this workflow simply never runs.
+  repository_dispatch:
+    types: [daily_line]
+  workflow_dispatch:
+    inputs:
+      force_send:
+        description: "Send even after 11:00 Stockholm (for testing)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: daily-line
+  cancel-in-progress: true
+
+jobs:
+  daily:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # Fresh snapshot in-place, same as the coach job: today's readiness only
+      # exists once the ring has synced, so the committed file may be hours old.
+      # Not committed here; fetch-fitness owns commits.
+      - name: Fetch fresh snapshot
+        env:
+          HEVY_API_KEY: ${{ secrets.HEVY_API_KEY }}
+          OURA_TOKEN: ${{ secrets.OURA_TOKEN }}
+          FITNESS_KEY: ${{ secrets.FITNESS_KEY }}
+          INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
+          ENC_FORMAT: ${{ vars.ENC_FORMAT }}
+        run: node fetch.js
+
+      - name: Send the morning line
+        env:
+          FITNESS_KEY: ${{ secrets.FITNESS_KEY }}
+          SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+          FORCE_SEND: ${{ inputs.force_send && '1' || '' }}
+        run: node daily.js

@@ -1,0 +1,60 @@
+{
+  "revised": "2026-07-29",
+  "week": {
+    "Sunday": "Run (long easy)",
+    "Monday": "Upper A",
+    "Tuesday": "Lower A",
+    "Wednesday": "Rest",
+    "Thursday": "Run (hard intervals)",
+    "Friday": "Upper B",
+    "Saturday": "Lower B"
+  },
+  "cycle": ["Upper A", "Lower A", "Upper B", "Lower B"],
+  "sessions": {
+    "Lower A": [
+      { "name": "Squat", "sets": 3 },
+      { "name": "Deadlift", "sets": 3, "note": "moved to a 5-8 rep range on 2026-08-05, off 3-5, because at 3-5 it was a strength lift with a poor stimulus-to-fatigue ratio for size" },
+      { "name": "Romanian Deadlift", "sets": 3, "note": "same bar as the deadlift" },
+      { "name": "Leg Extension", "sets": 3 },
+      { "name": "Seated Calf Raise", "sets": 3 },
+      { "name": "Lateral Raise", "sets": 3 }
+    ],
+    "Upper A": [
+      { "name": "Bench", "sets": 4 },
+      { "name": "Overhead Press", "sets": 3 },
+      { "name": "Bent-Over Row", "sets": 3, "note": "all three on ONE barbell" },
+      { "name": "Cable Fly Crossovers", "sets": 3 },
+      { "name": "Barbell Curl", "sets": 3 },
+      { "name": "Triceps Pressdown", "sets": 3 },
+      { "name": "Lateral Raise", "sets": 3 }
+    ],
+    "Lower B": [
+      { "name": "Squat", "sets": 4, "note": "heavy" },
+      { "name": "Romanian Deadlift", "sets": 3 },
+      { "name": "Leg Extension", "sets": 3 },
+      { "name": "Rear Kick", "sets": 3 },
+      { "name": "Seated Calf Raise", "sets": 3 }
+    ],
+    "Upper B": [
+      { "name": "Incline Bench", "sets": 4 },
+      { "name": "Pec Deck", "sets": 2 },
+      { "name": "Seated Cable Row", "sets": 3 },
+      { "name": "Lat Pulldown", "sets": 3 },
+      { "name": "Face Pull", "sets": 3 },
+      { "name": "Hammer Curl", "sets": 3 },
+      { "name": "Cable Triceps Extension", "sets": 3 }
+    ]
+  },
+  "designed_weekly_sets": [
+    { "group": "quads", "sets": 13 },
+    { "group": "chest", "sets": 13 },
+    { "group": "shoulders", "sets": 12, "note": "OHP 3 + lateral raise 6 + face pull 3, and the lateral raises count as REAL work from 2026-08-05 rather than sub-failure filler" },
+    { "group": "back", "sets": 9, "note": "upper_back 6 + lats 3" },
+    { "group": "glutes", "sets": 6 },
+    { "group": "hamstrings", "sets": 6, "note": "direct; 9 counting the deadlift, which Hevy classes as glutes" },
+    { "group": "calves", "sets": 6 },
+    { "group": "biceps", "sets": 6, "note": "direct, plus 9-11 indirect" },
+    { "group": "triceps", "sets": 6, "note": "direct, plus 9-11 indirect" }
+  ],
+  "temporary_rules": []
+}
