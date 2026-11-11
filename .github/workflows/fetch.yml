@@ -64,3 +64,12 @@ jobs:
           else
             echo "No change in fitness.json.enc or history.json.enc"
           fi
+
+      # Same ciphertext to the Worker, so readers can move off this public repo
+      # (docs/worker-contract.md, step 5). main only, like the commit above, and
+      # never fatal: git stays the source of truth until the switch.
+      - name: Mirror snapshot to the Worker
+        if: github.ref == 'refs/heads/main'
+        env:
+          INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
+        run: node mirror.js fitness.json.enc history.json.enc

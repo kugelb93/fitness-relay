@@ -79,3 +79,10 @@ jobs:
           else
             echo "No change in meditation.json.enc or notified.json.enc"
           fi
+
+      # See fetch.yml: same ciphertext to the Worker, main only, never fatal.
+      - name: Mirror snapshots to the Worker
+        if: github.ref == 'refs/heads/main'
+        env:
+          INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
+        run: node mirror.js meditation.json.enc notified.json.enc

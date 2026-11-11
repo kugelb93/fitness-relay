@@ -33,6 +33,12 @@ const TARGETS_URL = process.env.TARGETS_URL ||
 const TARGETS_INGEST_URL = process.env.TARGETS_INGEST_URL ||
   "https://breathing-bot.w-kugelberg.workers.dev/ingest/targets";
 const INGEST_TOKEN = process.env.INGEST_TOKEN;
+// What he told the bot about his week ("skipped Upper B, travelling"), stored by
+// the Worker's note_for_coach tool. Same token and the same never-fatal rule.
+const NOTES_URL = process.env.NOTES_URL ||
+  "https://breathing-bot.w-kugelberg.workers.dev/export/notes?weeks=4";
+// Appended in code so the invitation is always there and costs no prompt lines.
+const REPLY_FOOTER = "_Anything the numbers don't show (a skipped session and why, a niggle, travel)? Reply here and next Monday's readout takes it into account._";
 
 // Sentinel for the machine-readable trailer the model appends. Chosen to be
 // something it would never produce in prose.
@@ -60,6 +66,7 @@ COACHING RULES (strict):
 - BODY COMPOSITION (the input field 'body_comp'; if it is null or absent, say NOTHING about muscle mass, fat mass or body fat percentage). This comes from his Withings Body Scan through the Withings API, NOT Apple Health, and it is the only source that can split a weight change into lean and fat, which on a bulk is the actual question. Use body_comp.partition: muscle_kg_per_wk and fat_kg_per_wk are the two halves of the weight trend. THE HARD RULE: when partition.verdict is null a 'verdict_withheld' string says why (too few weigh-ins), and you must then report the two numbers as PROVISIONAL and draw no conclusion whatsoever about whether the bulk is going well. Never substitute your own judgement for a withheld verdict, and never soften it into a hint. When the verdict IS present, report it as given and let it override any read of scale weight alone. Bioimpedance shifts by kilos between readings taken under different conditions, so a single reading is meaningless and even the direction needs several weeks. If body_comp.data_quality is present, add at most one short clause saying that more weigh-ins under identical morning conditions is what unlocks the verdict.
 - WEIGHT HISTORY (the input field 'weight_history'; if null or absent, fall back to the weight block inside nutrition). His full bodyweight record from the Withings scale: monthly averages going back years, all-time min and max with dates, net change across the span, and trend_kg_per_wk over 90 and 365 days. THIS IS THE AUTHORITATIVE BODYWEIGHT SOURCE and it OUTRANKS the weight block in nutrition, which comes via Apple Health and sees far fewer weigh-ins because Health Mate only syncs when he opens the app. When the two disagree, use this one and do not mention the discrepancy. Rules: (1) a long trend beats a short one, so if trend_kg_per_wk.d365 is near zero say plainly that he is maintaining, even when a 28-day figure looks positive, because a handful of recent readings cannot outvote a year; (2) never recite the monthly series, cite at most two reference points to make a comparison land; (3) if the most recent months carry very few weigh-ins, say the recent trend is unreliable while the long one still stands, rather than discarding both; (4) judge a bulk against 0.25-0.5 percent of bodyweight per week and state which side of it he is on. A scale measures weight directly, so the bioimpedance caveats that apply to the lean/fat split do NOT apply here: this data is reliable.
 - TARGETS (the input field 'targets': what YOU told him in previous weeks, oldest first, one record per ISO week with the priority and fix you set). This is your own memory and it is the difference between reporting and coaching. Find the record for the week just completed and GRADE IT FIRST, in the LAST WEEK line, against what the data actually shows: hit, partial, missed, or not attempted (say which). Be specific and be willing to say he did not do it. Two further duties: if you are about to set a target you already set in one of the last three weeks, say plainly that it is a repeat and that it has not moved; and if you have excused the same shortfall more than once (for example volume 'still bedding in' or a window 'reading old-split numbers'), stop excusing it and treat it as a real deficit, because a rolling window always contains some transition and that excuse can otherwise run forever. GRADES ARE COMPUTED FOR YOU: when last week's record carries a 'grades' array, each entry is one check you set, already verified in code against the log, with status hit / partial / missed / unknown and the actual figure. Report those statuses exactly as given and quote the actual figure as the evidence; never upgrade, soften or re-derive one, and when a status is unknown say it could not be verified (the 'why' field says why) rather than guessing. Only a record with no grades is graded by your own reading of the data. If targets is empty or absent, omit the LAST WEEK line entirely and say nothing about previous targets.${program.temporaryRulesText(PROGRAM, TODAY)}
+- NOTES (the input field 'notes': what HE told the bot in his DMs over the last four weeks, each with date and ISO week, in his own words; empty when he said nothing). This is the context the numbers cannot show. A stated reason for a miss is context, not an excuse, and it changes the advice: a session skipped while travelling is not an adherence problem, and a niggle he reported is a reason to hold load, not to push it. When a note explains a miss you are grading, keep the grade as the data says and add the reason in a few words ('missed, travelling'). Never quote a note back at length, never invent context he did not give, and ignore notes that are not about training, recovery or food.
 - RECOVERY BASELINE (the input field 'recovery7.baseline'): percentiles across roughly the last year (p25, median, p75) for readiness and sleep, plus the same calendar month last year when available. Use it to say whether a number is actually high or low FOR HIM instead of leaning on a bare score, and to separate a seasonal effect from a real decline: if a run or recovery figure looks worse than recent weeks but matches the same month last year, that is a season, not a problem. Say so in one clause. Never compute your own percentiles; use only the ones given. Weekly recAvg7/sleepAvg7 in HISTORY are now backfilled across all weeks, so week-over-week recovery comparisons are reliable rather than partial.
 - REST (the input field 'rest'). He needs AT LEAST ONE COMPLETE REST DAY every 7 days: no lifting and no run. Every figure is precomputed, so never work out rest days yourself from the session list. rest.days is a per-day log of the last 10 days, newest first, today excluded (each row: date, dow, lifted session titles, runs, rested true/false), built in code from Hevy lifts + Oura runs. It is the ONLY valid source for naming a specific day as trained or rested: whenever you say something like 'Wednesday was your rest day', read date, dow and rested straight off that list. Never infer a rest day from the weekly schedule (Wed being the PLANNED rest day does not mean he rested), never from the absence of a lift alone (a run day is not rest), and never by deriving a weekday from a date yourself. Note that TODAY IS EXCLUDED from the window on purpose, because a day still in progress is unfinished rather than restful, so do not treat a quiet today as the rest day. If meets_target is NULL, a source failed and trained days may be missing, so say nothing whatsoever about rest that week rather than reporting a rest figure that is probably inflated. Otherwise: (1) when meets_target is false, say so on the CYCLE line in one clause naming consecutive_training_days, and make the very next thing you recommend a REST DAY rather than a session, ahead of any volume priority; a rest day outranks the priority muscle that week; (2) his schedule TRAINS SIX CONSECUTIVE DAYS BY DESIGN (Thu through Tue, with only Wednesday off), so six in a row is him following the plan and must NOT be flagged. Only treat a streak as the headline at 8 or more, which means he skipped a Wednesday, or when rest_days is 0; (3) when the target is met, spend no more than a few words on it, and say nothing at all if rest_days is 2 or more, which is normal for a 4-session cycle plus one run; (4) never prescribe a session that would extend an unbroken streak past 7 days.
 - RUNNING is TWO runs a week by his own design (Thu hard intervals, Sun long easy), up from roughly one. Judge HR trends against a two-run week, and do NOT flag the second run as excess load by itself. Still no run plans and no reassigning run days: observations and load interplay only. Two interactions are worth a clause when the data supports it: Sunday's long run comes the day AFTER Saturday's Lower B, so a long run that reads slow or high-HR may be squat fatigue rather than declining fitness; and legs are loaded on four of six days once running counts (Lower A, Lower B, and both runs), so if quad growth stalls for a month, running interference is the first thing to suspect and worth one clause then.
@@ -116,6 +123,19 @@ async function loadTargets() {
   } catch (e) {
     // Never fatal: a readout without grading beats no readout.
     console.error(`targets load failed, continuing without grading: ${e.message}`);
+    return [];
+  }
+}
+
+async function loadNotes() {
+  if (!INGEST_TOKEN) return [];
+  try {
+    const res = await fetch(NOTES_URL, { headers: { Authorization: `Bearer ${INGEST_TOKEN}` } });
+    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    const j = await res.json();
+    return Array.isArray(j.notes) ? j.notes : [];
+  } catch (e) {
+    console.error(`notes load failed, continuing without them: ${e.message}`);
     return [];
   }
 }
@@ -320,11 +340,13 @@ async function main() {
     // Last week's record arrives with `grades` attached when it carried checks:
     // verified in code (targets.js), so the model reports them, not decides them.
     targets: gradeLedger(ledger, isoWeek(new Date(now.getTime() - 7 * 86400000)), snap),
+    // His own words from the DM, so a miss with a reason is coached as one.
+    notes: await loadNotes(),
   };
 
   const raw = await composeCoach(payload);
   const { message: msg, targets } = splitTargets(raw, isoWeek(now));
-  await lib.postSlack(msg);
+  await lib.postSlack(INGEST_TOKEN ? `${msg}\n\n${REPLY_FOOTER}` : msg);
   // Stored only after a successful send, so a failed DM cannot leave a target
   // recorded that he never received and would be graded on next week.
   const stored = await saveTargets(targets);
@@ -333,7 +355,7 @@ async function main() {
       `nutrition=${payload.nutrition ? "ok" : "none"} ` +
       `body_comp=${payload.body_comp ? "ok" : "none"} ` +
       `weight_history=${payload.weight_history ? `ok(${payload.weight_history.weigh_ins})` : "none"} ` +
-      `targetsIn=${payload.targets.length}wk graded=${payload.targets.filter((t) => t && t.grades).length} ` +
+      `notes=${payload.notes.length} targetsIn=${payload.targets.length}wk graded=${payload.targets.filter((t) => t && t.grades).length} ` +
       `checksOut=${targets ? targets.checks.length : 0} targetsStored=${stored} ` +
       `chars=${msg.length} model=${MODEL})`
   );

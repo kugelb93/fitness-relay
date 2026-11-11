@@ -4,6 +4,17 @@ This repo is done as far as it can go alone. The rest happens in the
 breathing-bot Worker (a separate codebase) and in the repo's settings. Listed in
 the order that pays off soonest.
 
+## Status (2026-11-11)
+
+| Step | State |
+|---|---|
+| 1. Fire the workflows on time | Built in the Worker (`relaySchedule`, slots in `src/relay.js`). Also fires `fetch_fitness` at kugelb93/fitness-brief, if the token can reach it. |
+| 2. Keep `checks` in the ledger | Built in the Worker (`sanitizeChecks`). |
+| 3. Let him answer the coach | Built: Worker tool `note_for_coach` and `GET /export/notes`; `coach.js` reads them and the readout ends with a reply invitation. |
+| 4. One programme | Built as a daily drift check instead of a runtime read: the Worker compares Hevy routines with `program.json` on main and DMs him once when they diverge. The engine keeps reading Hevy, which is where he edits. |
+| 5. Data out of git | Half: `mirror.js` sends the same ciphertext to `POST /ingest/snapshot`; readers can use `GET /export/snapshot?name=fitness.json.enc` (bearer `INGEST_TOKEN`). The brief still reads GitHub, and the commit steps stay until it switches. |
+| 6. Rotate and purge | Not done, yours to run. |
+
 ## 1. Fire the workflows on time (small)
 
 GitHub's cron is hours late (table in the README). The Worker's cron triggers are
